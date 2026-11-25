@@ -1,0 +1,4034 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ManniT Technical Diving — Dive Log</title>
+<!-- Home screen on the Owner's phone and iPad, reached over Tailscale. The
+     manifest and the icons are explicit routes in server.py; nothing here is
+     fetched from anywhere but this server. -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png" type="image/png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Dive Log">
+<!-- black-translucent so the status bar sits on the page's own surface in both
+     themes, rather than on a white strip that only matches one of them. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#F4EFE6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0A2B33" media="(prefers-color-scheme: dark)">
+<style>
+/* ManniT palette, from Brand/Manni-T_Brand_Guide.md.
+   Two inks per surface, as the guide requires:
+     light  -> teal ink, coral accents, on cream
+     dark   -> cream ink, coral accents, on abyss teal
+   Data marks use ONE hue. Coral is reserved for a single highlighted thing
+   (max depth, deco) and never carries series identity on its own. */
+:root {
+  --cream:  #F4EFE6;
+  --teal:   #0D3B45;
+  --abyss:  #0A2B33;
+  --coral:  #E0824B;
+  --slate:  #7A8A8D;
+
+  --surface:      var(--cream);
+  --surface-sunk: #EBE4D8;
+  --ink:          var(--teal);
+  --ink-muted:    #4A6870;
+  /* Brand slate (#7A8A8D) measures 2.84:1 on the light sunk surface -- under the
+     3:1 floor for axis labels -- so light mode uses a darker step of it. Same for
+     the coral marks: brand coral is 2.23:1 on cream, which is fine for a logo
+     diamond and not fine for a data marker you have to find. Dark mode keeps the
+     brand values unchanged; they pass there at 4.71:1 and 6.01:1. */
+  --ink-faint:    #657579;
+  --rule:         #D9D0C2;
+  --series:       var(--teal);
+  --series-fill:  rgba(13, 59, 69, .13);
+  --accent:       var(--coral);   /* brand, for UI fills where text sits on it  */
+  --accent-mark:  #B85F2A;        /* data marks + focus rings, >= 3:1           */
+  --accent-text:  #98491A;        /* small coloured text, >= 4.5:1              */
+  --shadow:       0 1px 2px rgba(10,43,51,.06), 0 8px 24px rgba(10,43,51,.07);
+
+  /* Channel palette. The brand guide asks for one hue for data marks, which was
+     right while a dive had one series. It now has five, and a reader has to tell
+     ppO2 from CNS at a glance, so this is a deliberate departure: a categorical
+     set, fixed in this order and never cycled. Coral stays where the guide put
+     it -- on deco.
+
+     Not chosen by eye. Both sets pass all six checks of the palette validator
+     against their own surface: lightness band, chroma floor, colour-blind
+     separation on every adjacent pair, the normal-vision floor and 3:1 contrast.
+     Worst adjacent pair is deutan dE 14.9 light, 16.2 dark. Reordering to put
+     ppO2 next to deco drops that to 2.0, which is why the order is not
+     arbitrary. */
+  --ch-deco: #B85F2A;
+  --ch-temp: #1D5FA8;
+  --ch-ppo2: #417A22;
+  --ch-cns:  #8E3C86;
+  --ch-deco-fill: rgba(184, 95, 42, .16);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface:      var(--abyss);
+    --surface-sunk: #062026;
+    --ink:          var(--cream);
+    --ink-muted:    #B9C6C6;
+    --ink-faint:    var(--slate);
+    --rule:         #1B3D46;
+    --series:       #E8E1D5;
+    --series-fill:  rgba(232, 225, 213, .12);
+    --accent-mark:  var(--coral);
+    --accent-text:  var(--coral);
+    --shadow:       0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+    /* Stepped for the dark surface and validated against it, not lightened
+       from the light set: an automatic flip fails the lightness band. */
+    --ch-deco: #D2743C;
+    --ch-temp: #5A94D8;
+    --ch-ppo2: #63A23C;
+    --ch-cns:  #B76BB4;
+    --ch-deco-fill: rgba(210, 116, 60, .20);
+  }
+}
+:root[data-theme="dark"] {
+  --surface:      var(--abyss);
+  --surface-sunk: #062026;
+  --ink:          var(--cream);
+  --ink-muted:    #B9C6C6;
+  --ink-faint:    var(--slate);
+  --rule:         #1B3D46;
+  --series:       #E8E1D5;
+  --series-fill:  rgba(232, 225, 213, .12);
+  --accent-mark:  var(--coral);
+  --accent-text:  var(--coral);
+  --shadow:       0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+  --ch-deco: #D2743C;
+  --ch-temp: #5A94D8;
+  --ch-ppo2: #63A23C;
+  --ch-cns:  #B76BB4;
+  --ch-deco-fill: rgba(210, 116, 60, .20);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 28px 22px 80px; }
+
+header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+.mark { font-size: 26px; font-weight: 650; letter-spacing: -.02em; }
+.mark em { font-style: normal; color: var(--accent-text); }
+.sub { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-faint); }
+.tag { margin: 2px 0 14px; color: var(--ink-muted); font-style: italic; }
+/* Top-level views. The dive log is the page; the registers and the importer
+   are things you go to, so they are not stacked underneath it. */
+.views { display: flex; gap: 2px; margin: 0 0 26px; border-bottom: 1px solid var(--rule); }
+.views button { border: 0; background: none; border-radius: 0; padding: 9px 14px;
+                color: var(--ink-faint); font-size: 13px; margin-bottom: -1px;
+                border-bottom: 2px solid transparent; }
+.views button:hover { color: var(--ink); }
+.views button.on { color: var(--ink); font-weight: 600; background: none;
+                   border-bottom-color: var(--accent-mark); }
+.viewoff { display: none !important; }
+
+/* stat tiles — hero numbers, no plot, so no hover layer */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 10px; margin-bottom: 30px; }
+.tile { background: var(--surface-sunk); border-radius: 10px; padding: 13px 14px; }
+.tile .n { font-size: 25px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.tile .n small { font-size: 13px; font-weight: 500; color: var(--ink-muted); margin-left: 2px; }
+.tile .k { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); margin-top: 3px; }
+
+section { margin-bottom: 34px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-faint);
+     margin: 0 0 12px; font-weight: 600; }
+
+.card { background: var(--surface-sunk); border-radius: 12px; padding: 16px 18px 10px; }
+
+/* filters: one row above the data */
+.filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+input, select, button {
+  font: inherit; color: var(--ink); background: var(--surface-sunk);
+  border: 1px solid var(--rule); border-radius: 8px; padding: 7px 10px;
+}
+input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent-mark); outline-offset: 1px; }
+input[type=search] { min-width: 210px; }
+button { cursor: pointer; }
+button.on { background: var(--accent); border-color: var(--accent); color: #2A1405; font-weight: 600; }
+.count { color: var(--ink-faint); font-size: 13px; margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* table view — identity is never colour-alone; this is also the accessible view */
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint);
+     font-weight: 600; cursor: pointer; position: sticky; top: 0; background: var(--surface-sunk); }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--series-fill); }
+tbody tr.sel { background: var(--series-fill); box-shadow: inset 3px 0 0 var(--accent-mark); }
+td.num { text-align: right; }
+.pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px;
+        border: 1px solid var(--accent-text); color: var(--accent-text); font-weight: 600; }
+.tablewrap { max-height: 460px; overflow-y: auto; border-radius: 10px; }
+
+/* detail */
+.detail { display: none; }
+.detail.open { display: block; }
+.dgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px 20px; margin: 14px 0 4px; }
+.dgrid div span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); }
+.dgrid div b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.notes { white-space: pre-wrap; color: var(--ink-muted); border-left: 2px solid var(--rule);
+         padding-left: 12px; margin-top: 14px; max-height: 220px; overflow-y: auto; }
+/* The two note boxes are headed, because there are two of them now: the story
+   of the dive, and what to change next time. Same small caps as a field label,
+   so they read as two more things the dive says rather than as page sections. */
+.notesec h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
+              color: var(--ink-faint); margin: 14px 0 0; }
+.notesec .notes { margin-top: 4px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.chip { font-size: 12px; background: var(--surface); border: 1px solid var(--rule);
+        border-radius: 99px; padding: 2px 9px; color: var(--ink-muted); }
+.empty { color: var(--ink-faint); padding: 30px 0; text-align: center; }
+
+/* editing */
+b.edit { cursor: text; border-bottom: 1px dashed var(--rule); }
+b.edit:hover { border-bottom-color: var(--accent-mark); }
+td b.edit { font-weight: 500; }
+td select, td input { padding: 2px 5px; font-size: 13px; }
+.dgrid div b.edit { cursor: text; border-bottom: 1px dashed var(--rule); }
+.dgrid div b.edit:hover { border-bottom-color: var(--accent-mark); }
+.dgrid div b.locked { cursor: default; }
+.dgrid input, .dgrid select { width: 100%; padding: 3px 6px; font-size: 14px; }
+.fixed { display: block; font-size: 11px; color: var(--accent-text); margin-top: 2px; }
+.fixed button { border: 0; background: none; padding: 0 0 0 4px; color: var(--accent-text);
+                text-decoration: underline; font-size: 11px; cursor: pointer; }
+.chip.del { padding-right: 4px; }
+.chip button { border: 0; background: none; cursor: pointer; color: var(--ink-faint);
+               padding: 0 3px; font-size: 13px; line-height: 1; }
+.chip button:hover { color: var(--accent-text); }
+.sacstat { display: flex; align-items: baseline; gap: 28px; flex-wrap: wrap;
+           margin: 4px 0 14px; }
+.sacbig b { font-size: 34px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.sacbig span { display: block; font-size: 11px; text-transform: uppercase;
+               letter-spacing: .08em; color: var(--ink-faint); margin-top: 2px; }
+.sacside { display: flex; gap: 22px; }
+.sacside b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.sacside span { display: block; font-size: 11px; text-transform: uppercase;
+                letter-spacing: .08em; color: var(--ink-faint); margin-top: 2px; }
+.folders { margin: 10px 0 4px; }
+.folderhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.deeptick { display: flex; align-items: center; gap: 5px; text-transform: none;
+            letter-spacing: 0; font-size: 12px; cursor: pointer; }
+.deeptick input { margin: 0; }
+#impfolders { list-style: none; padding: 0; margin: 6px 0; }
+#impfolders li { display: flex; align-items: center; gap: 8px; padding: 3px 0;
+                 font-size: 13px; border-bottom: 1px solid var(--rule); }
+#impfolders li:last-child { border-bottom: 0; }
+#impfolders .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                    font-size: 12px; overflow-wrap: anywhere; }
+#impfolders .why { color: var(--ink-faint); font-size: 11px; text-transform: uppercase;
+                   letter-spacing: .07em; margin-left: auto; white-space: nowrap; }
+#impfolders button { border: 0; background: none; cursor: pointer; color: var(--ink-faint);
+                     font-size: 15px; line-height: 1; padding: 0 2px; margin-left: auto; }
+#impfolders button:hover { color: var(--ink); }
+#impfolderpath { flex: 1; min-width: 240px; font-size: 13px; padding: 4px 6px;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.addrow { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.addrow select { max-width: 260px; }
+.addrow button { padding: 4px 10px; font-size: 13px; }
+.danger { border-color: var(--accent-text); color: var(--accent-text); }
+.hidden-note { background: var(--series-fill); border-left: 3px solid var(--accent-mark);
+               padding: 8px 12px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13px; }
+.saving { opacity: .5; }
+.err { color: var(--accent-text); font-size: 12px; margin-top: 6px; }
+/* The kit and people registers. A cell you can click reads as one. */
+td.ecell { cursor: text; }
+td.ecell:hover { background: var(--surface-sunk); }
+td.ecell input { width: 100%; box-sizing: border-box; font: inherit; }
+.faint { color: var(--ink-faint); }
+/* A site's own page, opened under its row: everything that does not fit in a
+   column, as label-and-value pairs that edit in place like the cells above. */
+.siteform { width: 100%; border-collapse: collapse; margin: 6px 0 4px; }
+.siteform th { width: 11em; text-align: left; vertical-align: top; padding: 5px 10px 5px 0; }
+.siteform td { padding: 5px 6px; }
+td.ecell select { width: 100%; font: inherit; }
+tr.hiddensite td { color: var(--ink-faint); }
+/* Notes keep the line breaks they were written with, and are edited in a box
+   that has some -- a one-line input silently throws them away. */
+tr.photorow td.pre { white-space: pre-line; }
+td.ecell textarea { width: 100%; min-height: 7em; box-sizing: border-box; font: inherit; }
+/* The kit table's long cells wrap: an item in four sets would otherwise push
+   its own retired tick off the side. */
+#kitrows td.fold { white-space: normal; }
+#kitrows td.sets { max-width: 17em; font-size: 12px; }
+#kitrows td.kname { min-width: 11em; }
+/* Safari draws an EMPTY date box with today's date in it, faint. This one is
+   offered beside the word "retired", where that reads as a date filled in --
+   so until it has a value, or the cursor, it shows none. `required` is only
+   what makes an empty one :invalid; there is no form here to hold back. */
+input[type=date][required]:invalid:not(:focus)::-webkit-datetime-edit { opacity: 0; }
+#kitretire label { font-size: 13px; color: var(--ink-muted); align-self: center; }
+.ticked { text-align: center; }
+.ticked input { margin: 0; }
+/* photographs. A contact sheet in the Media view, a strip everywhere else.
+   The thumbnails are the small JPEGs the server made; the full-size original
+   is one tap away and is never what fills a grid. */
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(146px, 1fr)); gap: 10px; }
+.photo { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
+         overflow: hidden; }
+.photo img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover;
+             background: var(--surface-sunk); }
+.pmeta { padding: 6px 9px 8px; font-size: 11px; color: var(--ink-faint); }
+.pmeta b { display: block; font-size: 12px; color: var(--ink); font-weight: 600;
+           overflow-wrap: anywhere; }
+.pmeta .addrow { margin-top: 5px; }
+.strip { display: flex; gap: 9px; overflow-x: auto; margin: 14px 0 2px; padding-bottom: 4px; }
+.strip figure { margin: 0; flex: 0 0 auto; text-align: center; }
+.strip img { display: block; height: 92px; width: auto; max-width: 180px; object-fit: cover;
+             border-radius: 8px; border: 1px solid var(--rule); background: var(--surface-sunk); }
+.strip figcaption { font-size: 11px; color: var(--ink-faint); margin-top: 3px;
+                    font-variant-numeric: tabular-nums; }
+.strip figcaption button { border: 0; background: none; cursor: pointer; padding: 0 2px;
+                           color: var(--ink-faint); font-size: 12px; line-height: 1; }
+.strip figcaption button:hover { color: var(--accent-text); }
+/* A date that came off the filesystem is not the date the camera recorded, and
+   it is the one that files a photograph against the wrong dive. It is marked
+   wherever it is shown rather than quietly presented as a fact. */
+.guessed { color: var(--accent-text); }
+tr.photorow td { white-space: normal; }
+#history { font-size: 12px; }
+#history div { padding: 3px 0; border-bottom: 1px solid var(--rule); color: var(--ink-muted); }
+#history b { color: var(--ink); }
+/* One interaction path for mouse, pen and finger -- see scrub() in the script.
+   pan-y is what makes a chart scrubbable on a phone without trapping the page:
+   a vertical swipe is still the browser's to scroll with, a horizontal drag is
+   the chart's to read with, and the browser decides which on the first move
+   rather than after a delay. */
+svg { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
+.chrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
+.chip.ch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+           padding: 4px 10px; border-radius: 999px; border: 1px solid var(--rule);
+           background: transparent; color: var(--ink-muted); cursor: pointer; }
+.chip.ch i { width: 9px; height: 9px; border-radius: 2px; display: block; opacity: .35; }
+.chip.ch.on { border-color: var(--ink-muted); color: var(--ink); }
+.chip.ch.on i { opacity: 1; }
+.chip.ch:focus-visible { outline: 2px solid var(--accent-mark); outline-offset: 2px; }
+.chnote { font-size: 11px; color: var(--ink-faint); margin-left: 4px; }
+.tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--surface);
+       border-radius: 7px; padding: 7px 9px; font-size: 12px; line-height: 1.45; opacity: 0;
+       transition: opacity .1s; box-shadow: var(--shadow); z-index: 9; font-variant-numeric: tabular-nums; }
+.tip.on { opacity: 1; }
+.foot { color: var(--ink-faint); font-size: 12px; border-top: 1px solid var(--rule); padding-top: 14px; }
+
+/* ---------------------------------------------------------- read-only mode
+
+   Set when the request that fetched this page came from somewhere that cannot
+   write -- in practice, a phone over Tailscale. This is cosmetic and nothing
+   more: the server refuses the write either way (server.py, _reject_write).
+   What it buys is that a finger never lands on a control whose only possible
+   answer is 403, which is indistinguishable on a phone from the app being
+   broken. */
+:root[data-writable="0"] #lognew,
+:root[data-writable="0"] #newdive,
+:root[data-writable="0"] #bulkbar,
+:root[data-writable="0"] #views button[data-show="import"],
+:root[data-writable="0"] section[data-view="import"],
+:root[data-writable="0"] .selcol,
+:root[data-writable="0"] #dchips .addrow,
+:root[data-writable="0"] .chip.del button,
+:root[data-writable="0"] .fixed button,
+:root[data-writable="0"] #detail .card > .addrow,
+/* Photographs are readable from the phone and are not addable or removable
+   from it. The Media tab itself stays -- looking at them is the point -- and
+   everything that would write is gone: the folder scan that takes files into
+   the library, the pickers that attach one, and the ✕ that removes one. */
+:root[data-writable="0"] #mediascan,
+:root[data-writable="0"] .pmeta .addrow,
+:root[data-writable="0"] .strip figcaption button { display: none !important; }
+/* A correctable field reads as plain text: no dashed underline promising an
+   edit, and no text cursor over it. */
+:root[data-writable="0"] b.edit,
+:root[data-writable="0"] .dgrid div b.edit { border-bottom: 0; cursor: default; }
+:root[data-writable="0"] td.ecell { cursor: default; }
+:root[data-writable="0"] td.ecell:hover { background: none; }
+
+/* ------------------------------------------------------- phone snapshot mode
+
+   Set only when the page was NOT served by the laptop -- the static copy the
+   Owner installs on his phone for when the laptop is off (docs/phone.md).
+   data-snapshot is "empty" until a snapshot file has been loaded and "loaded"
+   after; on the laptop it is never set, so none of this applies there.
+
+   Photographs are not in the snapshot (v1), so the Media tab goes rather than
+   showing an empty library that reads as "your photos are gone". */
+.snapbar, .firstrun { display: none; }
+:root[data-snapshot="loaded"] .snapbar {
+  display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline;
+  background: var(--surface-sunk); border-radius: 10px; padding: 9px 12px;
+  margin: -8px 0 18px; font-size: 13px; color: var(--ink-muted); }
+:root[data-snapshot="empty"] .firstrun { display: block; }
+:root[data-snapshot="empty"] .wrap > :not(header):not(.tag):not(.firstrun) {
+  display: none !important; }
+:root[data-snapshot] #views button[data-show="media"],
+:root[data-snapshot] section[data-view="media"] { display: none !important; }
+.firstrun { background: var(--surface-sunk); border-radius: 12px; padding: 18px 18px 8px;
+            max-width: 34em; line-height: 1.5; }
+.firstrun h2 { color: var(--ink); }
+.firstrun p { margin: 0 0 12px; }
+/* The file input is the control iOS turns into the Files picker; it sits
+   inside a label styled as the button, and is kept in the layout (not
+   display:none) so every browser still opens it from a tap on the label. */
+.snapload { position: relative; display: inline-block; cursor: pointer;
+            color: var(--accent-text); font-weight: 600; }
+.snapload.big { color: #2A1405; background: var(--accent); border-radius: 8px;
+                padding: 9px 16px; margin: 4px 0 12px; }
+.snapload input { position: absolute; inset: 0; width: 100%; height: 100%;
+                  opacity: 0; cursor: pointer; }
+.snaperr { color: var(--accent-text); font-size: 13px; min-height: 1em; }
+
+/* ------------------------------------------------------------- narrow screens
+
+   Two breakpoints. 820px is an iPad in portrait or a split view; 430px is the
+   phone. Nothing below is a separate mobile layout -- it is the same page with
+   the columns the detail pane already carries taken out of the table, and with
+   everything you tap made big enough to hit. */
+@media (max-width: 820px) {
+  /* viewport-fit=cover plus a translucent status bar means the page owns the
+     whole screen, corners and home indicator included, so it has to inset
+     itself. env() is 0 everywhere that has no notch. */
+  .wrap { padding: 18px 14px 64px;
+          padding-top: calc(18px + env(safe-area-inset-top));
+          padding-left: max(14px, env(safe-area-inset-left));
+          padding-right: max(14px, env(safe-area-inset-right));
+          padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  /* Five tabs will not sit on one line on an iPad in portrait. */
+  .views { flex-wrap: wrap; }
+  .views button { padding: 11px 14px; min-height: 44px; }
+  /* Apple's Human Interface Guidelines put the minimum tap target at 44pt.
+     A 30px-high select is a miss two times in five. */
+  button, select, input, .chip.ch, .deeptick { min-height: 44px; }
+  td.ecell input, .dgrid input, .dgrid select, td select, td input { min-height: 36px; }
+  th, td { padding: 11px 10px; }
+  /* A scrolling box inside a scrolling page is the single worst thing to meet
+     on a touch screen: the flick that was meant for the page is eaten by the
+     box, and the box has no visible edge to explain why. Let the page scroll. */
+  .tablewrap { max-height: none; }
+  #history, .notes { max-height: none; }
+  /* Columns by priority. Country, temperature and computer are all in the
+     detail pane one tap away, and the table is only a way of getting there. */
+  .c2 { display: none; }
+  input[type=search] { min-width: 0; flex: 1 1 180px; }
+  .count { margin-left: 0; }
+}
+@media (max-width: 430px) {
+  /* viewport-fit=cover plus a translucent status bar means the page owns the
+     whole screen, corners and home indicator included, so it has to inset
+     itself. env() is 0 everywhere that has no notch. */
+  .wrap { padding: 14px 12px 56px;
+          padding-top: calc(14px + env(safe-area-inset-top));
+          padding-left: max(12px, env(safe-area-inset-left));
+          padding-right: max(12px, env(safe-area-inset-right));
+          padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+  .c3 { display: none; }
+  /* A kit name is long ("Tec - CCR - Cylinder - LP50 1"); on a phone it wraps
+     rather than pushing the retired tick off the side. */
+  #kitrows td { white-space: normal; }
+  #kitrows td.day { white-space: nowrap; }
+  #kithead th { letter-spacing: 0; }
+  #kitrows td.kname { min-width: 0; }
+  #kithead th, #kitrows > tr > td { padding-left: 5px; padding-right: 5px; }
+  #kitrows button { padding: 6px 8px; font-size: 13px; }
+  .siteform th { width: 8em; }
+  .tiles { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
+  .tile .n { font-size: 21px; }
+  .dgrid { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+  .filters { gap: 6px; }
+  .sacside { gap: 14px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="mark">Manni<em>T</em></div>
+    <div class="sub">Technical Diving</div>
+    <button id="theme" style="margin-left:auto" title="Switch light / dark">◐</button>
+  </header>
+  <p class="tag">Dive gentle, go deep.</p>
+
+  <!-- Phone snapshot mode only; hidden on the laptop. See SNAPSHOT below. -->
+  <div class="snapbar" id="snapbar">
+    <span id="snapwhen"></span><span aria-hidden="true">·</span>
+    <label class="snapload">Load newer<input type="file" class="snapfile"
+      accept=".gz,.json,application/gzip,application/json"></label>
+    <span class="snaperr" id="snaperrbar"></span>
+  </div>
+  <div class="firstrun" id="firstrun">
+    <h2>Your dive log, offline</h2>
+    <p>This copy of the log reads a snapshot rather than the laptop, so it works
+      with the laptop off and with no signal. Nothing here can change your log.</p>
+    <p>The laptop writes a fresh snapshot with every backup, to
+      <b>iCloud Drive › Divelog › mannit-phone.json.gz</b>. Choose it once; it is
+      kept on this phone until you load a newer one.</p>
+    <label class="snapload big">Load snapshot<input type="file" class="snapfile"
+      accept=".gz,.json,application/gzip,application/json"></label>
+    <p class="snaperr" id="snaperr"></p>
+  </div>
+
+  <nav class="views" id="views">
+    <button data-show="log" class="on">Dive log</button>
+    <button data-show="kit">Kit</button>
+    <button data-show="people">People</button>
+    <button data-show="sites">Sites</button>
+    <button data-show="sac">Gas use</button>
+    <button data-show="import">Import</button>
+    <button data-show="history">History</button>
+    <button data-show="media">Media</button>
+  </nav>
+
+  <div class="tiles" id="tiles" data-view="log"></div>
+
+  <section data-view="log">
+    <h2>Dives per year</h2>
+    <div class="card"><div id="years"></div></div>
+  </section>
+
+  <section data-view="log">
+    <h2>Explore</h2>
+    <div class="card">
+      <div class="filters" id="dims"></div>
+      <div id="breakdown"></div>
+      <div class="tablewrap scroll" id="btablewrap">
+        <table>
+          <thead><tr>
+            <th id="bhead">Value</th>
+            <th class="num">Dives</th>
+            <th class="num">Hours</th>
+            <th class="num c2">Deepest</th>
+            <th class="num c2">Average</th>
+            <th class="c3">First</th>
+            <th class="c2">Last</th>
+          </tr></thead>
+          <tbody id="brows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section data-view="log">
+    <h2>Time on the loop</h2>
+    <div class="tiles" id="looptiles"></div>
+  </section>
+
+  <section data-view="log">
+    <h2>Dive log</h2>
+    <div class="filters">
+      <button id="lognew" class="on">＋ Log a dive</button>
+      <input type="search" id="q" placeholder="Search site, country, trip, issues…">
+      <select id="country"><option value="">All countries</option></select>
+      <select id="year"><option value="">All years</option></select>
+      <button id="deco">Deco only</button>
+      <button id="trimix">Trimix only</button>
+      <button id="clearsel" hidden></button>
+      <span class="count" id="count"></span>
+    </div>
+    <div id="newdive" class="card" hidden style="margin-bottom:12px">
+      <div class="addrow">
+        <label style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+          color:var(--ink-faint);width:100%">New dive — only the date and time are required</label>
+        <input id="nd_date" type="date">
+        <input id="nd_time" type="time" value="09:00">
+        <input id="nd_dur" type="number" step="1" placeholder="minutes" style="width:110px">
+        <input id="nd_depth" type="number" step="any" placeholder="max depth m" style="width:130px">
+        <select id="nd_site"></select>
+        <select id="nd_supply">
+          <option value="">supply mode…</option>
+          <option value="open_circuit">open circuit</option>
+          <option value="closed_circuit">closed circuit</option>
+          <option value="sidemount">sidemount</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px">
+          <input type="checkbox" id="nd_copy" checked>
+          copy site, boat, operator, buddies and kit from the last dive
+        </label>
+        <button id="nd_save" class="on">Log it</button>
+        <button id="nd_cancel">Cancel</button>
+        <span class="err" id="nd_err"></span>
+      </div>
+    </div>
+    <div id="bulkbar" class="filters" hidden
+         style="background:var(--surface-sunk);border-radius:10px;padding:10px 12px">
+      <b id="bulkcount"></b>
+      <select id="bulkaction">
+        <option value="field">Set a field</option>
+        <option value="link">Add a link</option>
+        <option value="merge">Merge into one dive</option>
+      </select>
+      <select id="bulkprimary" hidden title="which dive supplies site, boat, trip, suit and rating"></select>
+      <select id="bulkfield"></select>
+      <select id="bulkvalueref" hidden></select>
+      <input id="bulkvalue" placeholder="value" style="width:150px">
+      <select id="bulkkind" hidden>
+        <option value="person">Person</option>
+        <option value="equipment">Kit</option>
+        <option value="dive_type">Dive type</option>
+        <option value="organisation">Operator</option>
+      </select>
+      <select id="bulktarget" hidden></select>
+      <select id="bulkrole" hidden></select>
+      <button id="bulkapply" class="on">Apply</button>
+      <button id="bulkclear">Clear selection</button>
+      <span class="err" id="bulkerr"></span>
+    </div>
+    <div class="tablewrap scroll">
+      <table>
+        <thead><tr>
+          <!-- Column priority. .c2 goes at 820px, .c3 at 430px. Date, site,
+               depth and duration survive to the narrowest screen because they
+               are what tells one dive from another; everything dropped is in
+               the detail pane, which is one tap away. -->
+          <th class="selcol" style="width:28px"><input type="checkbox" id="selall" title="select all shown"></th>
+          <th data-k="started_local">Date</th>
+          <th data-k="dive_number" class="num c3">#</th>
+          <th data-k="site">Site</th>
+          <th data-k="country" class="c2">Country</th>
+          <th data-k="max_depth_m" class="num">Depth</th>
+          <th data-k="duration_seconds" class="num">Time</th>
+          <th data-k="water_temp_c" class="num c2">Temp</th>
+          <th data-k="mix_o2_percent" class="num c3">Gas</th>
+          <th data-k="computer_normalised" class="c2">Computer</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="detail" id="detail" data-view="log">
+    <h2 id="dtitle">Dive</h2>
+    <div class="card">
+      <div id="chtoggles" class="chrow"></div>
+      <div id="profile"></div>
+      <div id="channels"></div>
+      <div id="dhidden"></div>
+      <div class="dgrid" id="dfields"></div>
+      <div id="dchips"></div>
+      <div id="dphotos"></div>
+      <div class="notesec" id="dnotessec" hidden>
+        <h3>General notes</h3>
+        <div class="notes" id="dnotes"></div>
+      </div>
+      <div class="notesec" id="dissuessec" hidden>
+        <h3>Improvements / Issues</h3>
+        <div class="notes" id="dissues"></div>
+      </div>
+      <div class="addrow" style="margin-top:14px">
+        <select id="kitset"></select>
+        <button id="applykit">Apply kit set</button>
+        <button id="savekit">Save this dive's kit as a set</button>
+        <button id="delkit" class="danger">Delete set</button>
+      </div>
+      <div class="addrow" style="margin-top:14px">
+        <button id="editnotes">Edit general notes</button>
+        <button id="editissues">Edit improvements / issues</button>
+        <button id="hidedive" class="danger"></button>
+        <button id="unmergedive" class="danger" hidden>Unmerge this dive</button>
+        <span class="err" id="derr"></span>
+      </div>
+    </div>
+  </section>
+
+  <section data-view="kit">
+    <h2>Kit</h2>
+    <div class="card">
+      <div class="filters">
+        <button data-kit="active" class="on">In service</button>
+        <button data-kit="retired">Retired</button>
+        <button data-kit="all">All</button>
+        <input type="search" id="kitq" placeholder="Search kit…">
+        <span class="count" id="kitcount"></span>
+      </div>
+      <div class="err" id="kiterr"></div>
+      <!-- Both filled by the script, and only where a write could succeed. -->
+      <div id="kitadd"></div>
+      <div id="kitretire"></div>
+      <div class="tablewrap scroll">
+        <table>
+          <thead><tr id="kithead"></tr></thead>
+          <tbody id="kitrows"></tbody>
+        </table>
+      </div>
+      <p class="sub">Ticking an item retired takes it off the pickers for new
+        dives. It stays on every dive it was carried on — nothing here is ever
+        deleted, and unticking it puts it back.</p>
+    </div>
+  </section>
+
+  <section data-view="people">
+    <h2>People</h2>
+    <div class="card">
+      <div class="filters">
+        <input type="search" id="peopleq" placeholder="Search people…">
+        <span class="count" id="peoplecount"></span>
+      </div>
+      <div class="err" id="peopleerr"></div>
+      <div class="tablewrap scroll">
+        <table>
+          <thead><tr>
+            <th>Name</th><th class="num">Dives</th><th>Last dive</th>
+            <th>Phone</th><th>Email</th><th>Notes</th>
+          </tr></thead>
+          <tbody id="peoplerows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section data-view="sites">
+    <h2>Sites</h2>
+    <div class="card">
+      <div class="filters">
+        <button data-sites="live" class="on">In use</button>
+        <button data-sites="hidden">Hidden</button>
+        <button data-sites="all">All</button>
+        <input type="search" id="sitesq" placeholder="Search sites…">
+        <span class="count" id="sitescount"></span>
+      </div>
+      <div class="err" id="siteserr"></div>
+      <div class="tablewrap scroll">
+        <table>
+          <thead><tr>
+            <th>Site</th><th class="c3">Country</th><th class="c2">Type</th>
+            <th class="c2">Access</th><th class="c2">Level</th>
+            <th class="num c3">Typical</th><th class="num">Dives</th>
+            <th class="c2">First</th><th class="c3">Last</th>
+            <th class="num c2">Deepest</th><th class="num c3">Photos</th><th></th>
+          </tr></thead>
+          <tbody id="siterows"></tbody>
+        </table>
+      </div>
+      <p class="sub">A site's name is held once, so renaming it here renames it on
+        every dive there. Merging folds a duplicate into the site you keep and
+        moves its dives across; hiding takes an undived site off the pickers.
+        Neither deletes anything, and both can be undone.</p>
+    </div>
+  </section>
+
+  <section data-view="sac">
+    <h2>Gas use</h2>
+    <div class="card">
+      <div class="filters">
+        <label class="sub" for="sacyear">Year</label>
+        <select id="sacyear"></select>
+        <span class="count" id="saccount"></span>
+      </div>
+      <div class="sacstat">
+        <div class="sacbig"><b id="sacmedian">—</b><span>L/min typical</span></div>
+        <div class="sacside">
+          <div><b id="sacmean">—</b><span>mean</span></div>
+          <div><b id="sacbest">—</b><span>best</span></div>
+          <div><b id="sacworst">—</b><span>worst</span></div>
+        </div>
+      </div>
+      <div id="sacchart"></div>
+      <p class="sub" id="sacnote"></p>
+    </div>
+  </section>
+
+  <section data-view="import">
+    <h2>Import from a dive computer</h2>
+    <div class="card">
+      <div class="filters">
+        <button id="impscan">Look for exports</button>
+        <select id="impsource"><option value="">— nothing found yet —</option></select>
+        <button id="impanalyse">See what is in it</button>
+      </div>
+      <div class="err" id="imperr"></div>
+      <p class="sub" id="impwhere">Looks beside your logbook, in the Team Inbox
+        and in Downloads. Shearwater exports and Garmin FIT files.</p>
+      <div class="folders">
+        <div class="folderhead">
+          <span class="sub" id="impfoldercount">Folders searched</span>
+          <label class="sub deeptick"><input type="checkbox" id="impdeep" checked>
+            also look inside subfolders</label>
+        </div>
+        <ul id="impfolders"></ul>
+        <div class="addrow">
+          <input id="impfolderpath" type="text" spellcheck="false"
+                 placeholder="/Users/you/Dropbox/Dive exports">
+          <button id="impfolderadd">Add folder</button>
+        </div>
+      </div>
+      <div id="impreport"></div>
+      <div id="impnew"></div>
+      <div class="addrow" id="impgo" hidden>
+        <button id="impcommit" class="on">Import the ticked dives</button>
+        <span class="count" id="imppicked"></span>
+      </div>
+      <div id="impresult"></div>
+    </div>
+  </section>
+
+  <section data-view="history">
+    <h2>Edit history</h2>
+    <p class="sub">Every correction ever made, newest first. Append-only:
+      nothing here is ever rewritten or removed, including the changes that
+      were later undone.</p>
+    <div class="card"><div id="history"></div></div>
+    <p class="sub" id="histnote"></p>
+  </section>
+
+  <section data-view="media">
+    <h2>Photos</h2>
+    <div class="card" id="mediascan">
+      <div class="filters">
+        <button id="mscan">Look for photos</button>
+        <span class="count" id="mscount"></span>
+      </div>
+      <div class="err" id="mserr"></div>
+      <p class="sub" id="mswhere">Drop photographs in any folder the importer
+        already searches — the Import tab is where that list is kept — and they
+        turn up here. Nothing is uploaded from a browser and nothing is moved:
+        the file you dropped stays where you put it.</p>
+      <div id="msfound"></div>
+      <div class="addrow" id="msgo" hidden>
+        <button id="mscommit" class="on">Add the ticked photos</button>
+        <span class="count" id="mspicked"></span>
+      </div>
+      <div id="msresult"></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="filters">
+        <button data-media="all" class="on">All</button>
+        <button data-media="dive">On a dive</button>
+        <button data-media="kit">On kit</button>
+        <button data-media="loose">Not filed yet</button>
+        <input type="search" id="mediaq" placeholder="Search captions, dives, kit…">
+        <span class="count" id="mediacount"></span>
+      </div>
+      <div class="err" id="mediaerr"></div>
+      <div class="pgrid" id="mediagrid"></div>
+      <p class="sub">Removing a photograph hides it here and leaves the file on
+        disk, exactly like hiding a dive. Nothing in this log is ever deleted.</p>
+    </div>
+  </section>
+
+  <p class="foot" id="foot"></p>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+"use strict";
+/* Injected by the server at serve time. A cross-origin page cannot read this
+   response, so it cannot learn the token and cannot forge a write. */
+const TOKEN = "__DIVELOG_TOKEN__";
+
+/* Whether the request that fetched this page could have written. Injected the
+   same way, and read as a string on purpose: an unsubstituted placeholder --
+   the file opened straight off disk, say -- compares false, so the page falls
+   back to read-only rather than to offering edits that cannot work.
+
+   This decides nothing. The server asks the same question again of every write
+   (server.py, _reject_write) and never consults this. All it does is stop a
+   phone showing controls whose only possible answer is 403. */
+const WRITABLE = ("__DIVELOG_WRITABLE__" === "true");
+document.documentElement.setAttribute("data-writable", WRITABLE ? "1" : "0");
+
+/* ------------------------------------------------------- phone snapshot mode
+
+   The phone normally reads the live log from the laptop over Tailscale, which
+   only works while the laptop is awake. For the rest of the time there is a
+   static copy of this same page, hosted with no data in it (docs/phone.md),
+   that reads a snapshot file instead: src/export_phone.py writes one to iCloud
+   Drive with every backup, as a map from API path to the exact JSON the server
+   would have answered.
+
+   How the page knows which it is: the laptop's server substitutes the token
+   placeholder in every page it serves, so a TOKEN still holding it means
+   nobody served this page who could. The placeholder is spelled in two halves
+   here so that substitution cannot rewrite the comparison itself.
+
+   In snapshot mode `fetch` is replaced, for /api/ paths only, by a lookup in
+   the stored snapshot -- so every view below runs unchanged, reading the same
+   payloads it reads on the laptop. The replacement is installed by boot(),
+   never at load time: the test suites run this script with their own fetch
+   stubs and must keep them. WRITABLE is already false here (the writable
+   placeholder is unsubstituted too), so no edit control is ever drawn.
+
+   The snapshot is kept in IndexedDB one path per record, so opening the app
+   reads the handful of payloads the first screen needs and each dive when it
+   is opened, rather than unpacking and parsing the whole log on every launch. */
+const SNAPSHOT = (TOKEN === "__DIVELOG_" + "TOKEN__");
+const SNAPSHOT_FORMAT = 1;        /* export_phone.FORMAT this page understands */
+const SNAP_DB = "divelog-snapshot", SNAP_STORE = "api";
+/* A variable, not a literal: the laptop's worker is the one register() call
+   spelled out in the page, and the routes suite reads it from there. */
+const PHONE_WORKER = "sw-phone.js";
+let SNAP_OPEN = null, NATIVE_FETCH = null;
+
+function snapDb() {
+  if (!SNAP_OPEN) SNAP_OPEN = new Promise((resolve, reject) => {
+    const request = indexedDB.open(SNAP_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(SNAP_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return SNAP_OPEN;
+}
+
+async function snapGet(key) {
+  const db = await snapDb();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(SNAP_STORE, "readonly")
+      .objectStore(SNAP_STORE).get(key);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/* Replace the stored snapshot with another, in ONE transaction: a load that
+   fails half way -- storage full, the app closed mid-write -- rolls back and
+   leaves the previous snapshot whole, rather than a log missing half its
+   dives that nothing on screen would admit to. */
+async function snapReplace(snapshot) {
+  const db = await snapDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SNAP_STORE, "readwrite");
+    const store = tx.objectStore(SNAP_STORE);
+    store.clear();
+    for (const path of Object.keys(snapshot.api)) store.put(snapshot.api[path], path);
+    store.put(snapshot.meta, "meta");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("storing the snapshot was abandoned"));
+  });
+}
+
+/* The record a request is stored under. Only a breakdown's click-through
+   carries a query that matters; it is decoded and re-encoded so the key does
+   not depend on how this browser happened to escape the value -- the
+   exporter writes it with encodeURIComponent's rules (dimension_dives_path).
+   Any other query (the importer's "deep" flag) is not part of a snapshot. */
+function snapKey(path) {
+  const cut = path.indexOf("?");
+  const route = cut < 0 ? path : path.slice(0, cut);
+  if (!/^\/api\/dimension\/[^/]+\/dives$/.test(route)) return route;
+  let value = "";
+  for (const pair of (cut < 0 ? "" : path.slice(cut + 1)).split("&")) {
+    const eq = pair.indexOf("=");
+    if (eq > 0 && pair.slice(0, eq) === "value")
+      value = decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, " "));
+  }
+  return route + "?value=" + encodeURIComponent(value);
+}
+
+function snapAnswer(payload, status) {
+  return new Response(JSON.stringify(payload),
+    { status, headers: { "Content-Type": "application/json; charset=utf-8" } });
+}
+
+/* Stands in for fetch. A path the snapshot does not hold answers the same 404
+   the server gives an unknown path, which every caller already survives; a
+   write answers 403, as the server does to a phone -- not that one is ever
+   offered. Anything outside /api/ is left to the network (and the worker). */
+async function snapshotFetch(input, init) {
+  const url = typeof input === "string" ? input : "";
+  if (!url.startsWith("/api/")) return NATIVE_FETCH(input, init);
+  if (init && init.method && init.method.toUpperCase() !== "GET")
+    return snapAnswer({ error: "this is a read-only snapshot" }, 403);
+  const found = await snapGet(snapKey(url));
+  return found === undefined ? snapAnswer({ error: "not found" }, 404)
+                             : snapAnswer(found, 200);
+}
+
+/* Read a snapshot file the Owner picked -- gzipped as the exporter writes it,
+   or plain JSON if he unpacked it somewhere along the way -- and store it.
+   Told apart by gzip's two magic bytes rather than the file name, which the
+   Files app and iCloud are free to change. */
+async function loadSnapshotFile(file) {
+  const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+  let text;
+  if (head[0] === 0x1f && head[1] === 0x8b) {
+    if (typeof DecompressionStream === "undefined")
+      throw new Error("this browser cannot unpack .gz files — it needs iOS 16.4 or later");
+    text = await new Response(
+      file.stream().pipeThrough(new DecompressionStream("gzip"))).text();
+  } else {
+    text = await file.text();
+  }
+  let snapshot;
+  try { snapshot = JSON.parse(text); } catch (e) { snapshot = null; }
+  if (!snapshot || !snapshot.meta || !snapshot.api)
+    throw new Error("that file is not a dive log snapshot");
+  if (snapshot.meta.format !== SNAPSHOT_FORMAT)
+    throw new Error(`that snapshot is format ${snapshot.meta.format}; this page reads `
+      + `format ${SNAPSHOT_FORMAT}. Update the copy of the app you host.`);
+  await snapReplace(snapshot);
+  return snapshot.meta;
+}
+
+/* "2026-11-23 11:56", the laptop's own clock when the snapshot was written,
+   and how old that is once it is more than a day -- the one thing the Owner
+   cannot otherwise tell from a screen that looks exactly like the live log. */
+function snapshotWhen(meta) {
+  const when = String(meta.generated_at || "").slice(0, 16).replace("T", " ");
+  const days = Math.floor((Date.now() - Date.parse(meta.generated_at_utc)) / 864e5);
+  return `Snapshot from ${when}` + (days >= 1 ? ` (${days} day${days === 1 ? "" : "s"} old)` : "");
+}
+
+/* Run by boot() in snapshot mode. True when there is a snapshot to show and
+   fetch now reads it; false when the first-run screen is showing instead. */
+async function snapshotBoot() {
+  document.querySelectorAll(".snapfile").forEach(input =>
+    input.addEventListener("change", async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const errors = [$("#snaperr"), $("#snaperrbar")];
+      errors.forEach(e => { e.textContent = "Loading…"; });
+      try {
+        await loadSnapshotFile(file);
+        /* A clean start rather than refreshing every view in place: boot()
+           wires each control once, and a second boot would wire them twice. */
+        location.reload();
+      } catch (error) {
+        errors.forEach(e => { e.textContent = error.message; });
+      }
+    }));
+
+  /* Registered here, before anything can return early, so the app opens
+     offline from the home screen even before its first snapshot. */
+  if ("serviceWorker" in navigator)
+    navigator.serviceWorker.register(PHONE_WORKER).catch(() => {});
+
+  let meta;
+  try { meta = await snapGet("meta"); } catch (error) { meta = undefined; }
+  if (!meta || meta.format !== SNAPSHOT_FORMAT) {
+    document.documentElement.setAttribute("data-snapshot", "empty");
+    return false;
+  }
+  document.documentElement.setAttribute("data-snapshot", "loaded");
+  $("#snapwhen").textContent = `${snapshotWhen(meta)} · ${meta.dive_count} dives`;
+  NATIVE_FETCH = window.fetch.bind(window);
+  window.fetch = snapshotFetch;
+  return true;
+}
+
+/* ------------------------------------------------------------ touch input
+
+   Pointer Events are one path for mouse, pen and finger. Binding mouse events
+   and touch events both is how a chart ends up reading the same drag twice on
+   a trackpad, and how a tap arrives as a click 300ms after the finger left.
+
+   A mouse reports every move whether a button is down or not; a finger only
+   exists while it is down. So a move is a reading when it comes from a mouse,
+   or when something is pressed. Leaving clears for a mouse (there is a cursor
+   to leave with); lifting or cancelling clears for a finger. pointercancel is
+   what arrives when the browser decides a vertical swipe was a page scroll --
+   see touch-action: pan-y on the SVGs. */
+function scrub(element, read, clear) {
+  const mouse = ev => ev.pointerType === "mouse" || ev.pointerType === undefined;
+  element.addEventListener("pointerdown", read);
+  element.addEventListener("pointermove", ev => {
+    if (mouse(ev) || ev.buttons !== 0) read(ev);
+  });
+  element.addEventListener("pointerleave", ev => { if (mouse(ev)) clear(ev); });
+  element.addEventListener("pointerup", ev => { if (!mouse(ev)) clear(ev); });
+  element.addEventListener("pointercancel", clear);
+}
+
+/* ------------------------------------------------------- chart text scaling
+
+   Every chart is drawn in a 1100-unit-wide viewBox and scaled to whatever the
+   column is. On the Mac that is about 1:1, so an 11-unit label renders at 11px.
+   On a phone the same box is squeezed into ~350px and that label renders under
+   4px, which is not small -- it is gone.
+
+   So label sizes are given in viewBox units computed against how hard the box
+   is being squeezed, which keeps them the same *apparent* size everywhere. The
+   charts re-render on resize (below) so rotating the phone re-measures. */
+function textScale() {
+  const column = Math.max(240, innerWidth - 80);   /* page and card padding */
+  return Math.min(3, Math.max(1, 1100 / column));
+}
+
+async function post(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-DiveLog-Token": TOKEN },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok || data.error) throw new Error(data.error || response.statusText);
+  return data.result;
+}
+
+const $ = s => document.querySelector(s);
+const tip = $("#tip");
+let DIVES = [], VIEW = [], STATS = null, SEL = null;
+let sortKey = "started_local", sortDir = -1;
+const state = { q: "", country: "", year: "", deco: false, trimix: false, ids: null };
+
+const fmtT = s => s == null ? "—" : Math.floor(s / 60) + " min";
+const fmtD = m => m == null ? "—" : m.toFixed(1) + " m";
+/* The dive's main mix: its diluent or bottom cylinder when it has one, the
+   logged dive-level gas when it does not. Decided once, by the server
+   (MAIN_GAS_ID_SQL), so this column, the Trimix filter and the trimix tile
+   cannot disagree about which dives are trimix. */
+const gasOf = d => {
+  const o2 = d.mix_o2_percent, he = d.mix_he_percent;
+  return o2 == null ? "—"
+    : (he > 0 ? `${Math.round(o2)}/${Math.round(he)}`
+       : (Math.round(o2) === 21 ? "Air" : "EAN" + Math.round(o2)));
+};
+
+function showTip(html, ev) {
+  tip.innerHTML = html; tip.classList.add("on");
+  const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+  /* A cursor is a few pixels and sits beside what it points at. A finger is
+     about 9mm of it and sits on top, so the reading goes above the touch
+     instead of under the hand holding the phone. */
+  const finger = ev.pointerType && ev.pointerType !== "mouse";
+  let x = ev.clientX + (finger ? -w / 2 : pad);
+  let y = ev.clientY + (finger ? -h - 22 : pad);
+  if (x + w > innerWidth - 8) x = finger ? innerWidth - 8 - w : ev.clientX - w - pad;
+  if (x < 8) x = 8;
+  if (y + h > innerHeight - 8) y = ev.clientY - h - pad;
+  if (y < 8) y = ev.clientY + pad + 22;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+const hideTip = () => tip.classList.remove("on");
+
+/* ---------------------------------------------------------------- stat tiles */
+function tiles() {
+  const s = STATS, hours = Math.round(s.total_seconds / 3600);
+  const span = (s.first_dive || "").slice(0, 4) + "–" + (s.last_dive || "").slice(0, 4);
+  const cells = [
+    [s.dives, "", "dives"], [span, "", "years"],
+    [s.max_depth, "m", "deepest"], [hours.toLocaleString(), "h", "underwater"],
+    [s.deco_dives, "", "deco dives"], [s.trimix_dives, "", "trimix dives"],
+    [s.sites, "", "sites"], [s.countries, "", "countries"],
+    [s.samples.toLocaleString(), "", "samples"],
+  ];
+  $("#tiles").innerHTML = cells.map(([n, u, k]) =>
+    `<div class="tile"><div class="n">${n}${u ? `<small>${u}</small>` : ""}</div><div class="k">${k}</div></div>`
+  ).join("");
+}
+
+/* Hours and minutes from seconds. Rounded once, at the end: rounding each
+   dive first and adding those up loses about half a minute a dive, which over
+   188 rebreather dives is most of an hour that was really spent underwater. */
+/* Lead, in pounds. Stored to a tenth, but a whole number of pounds is the
+   normal answer and "18.0 lb" reads like false precision, so the trailing
+   zero goes. A blank is "not recorded"; 0 is "none carried", and they are
+   different claims. */
+function lb(pounds) {
+  if (pounds == null) return "—";
+  return `${Number(pounds).toFixed(1).replace(/\.0$/, "")} lb`;
+}
+
+function hm(seconds) {
+  const total = Math.round((seconds || 0) / 60);
+  return `${Math.floor(total / 60)}h ${String(total % 60).padStart(2, "0")}m`;
+}
+
+/* Time on a rebreather, by the kind of unit.
+
+   MCCR and twin dives also carry the CCR tag, so these are not three figures
+   to add together -- the two smaller ones are inside the first. The labels say
+   "of which" for that reason: a reader who summed all three would be counting
+   the same hours twice. */
+function loopTiles() {
+  const loop = STATS.loop;
+  if (!loop) return;
+  const cells = [
+    [loop.ccr, "CCR total"],
+    [loop.mccr, "of which MCCR"],
+    [loop.twin, "of which twin"],
+  ];
+  $("#looptiles").innerHTML = cells.map(([part, label]) =>
+    `<div class="tile"><div class="n">${hm(part.seconds)}</div>`
+    + `<div class="k">${label}</div>`
+    + `<div class="k" style="text-transform:none;letter-spacing:0">`
+    + `${part.dives} dive${part.dives === 1 ? "" : "s"}</div></div>`
+  ).join("");
+}
+
+/* ------------------------------------------------------- dives per year, bars */
+function yearChart() {
+  const data = Object.entries(STATS.by_year);
+  if (!data.length) return;
+  const ts = textScale(), FS = (11 * ts).toFixed(1);
+  const W = 1100, H = 190 + (ts - 1) * 22, L = 34 * ts, R = 8, T = 12, B = 26 * ts;
+  const max = Math.max(...data.map(d => d[1]));
+  const iw = W - L - R, ih = H - T - B;
+  const bw = iw / data.length;
+  const gap = 2;                                   /* 2px surface gap between bars */
+  const y = v => T + ih - (v / max) * ih;
+
+  let g = "";
+  for (let i = 0; i <= 4; i++) {
+    const v = Math.round(max * i / 4), yy = y(v);
+    g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--rule)" stroke-width="1"/>`
+       + `<text x="${L - 7}" y="${yy + 4 * ts}" text-anchor="end" font-size="${FS}" fill="var(--ink-faint)">${v}</text>`;
+  }
+  const bars = data.map(([yr, n], i) => {
+    const x = L + i * bw + gap / 2, w = bw - gap, h = ih - (y(n) - T);
+    /* 4px rounded data-end, square where it meets the baseline */
+    const r = Math.min(4, w / 2, h);
+    const path = `M${x},${T + ih} L${x},${y(n) + r} Q${x},${y(n)} ${x + r},${y(n)} `
+               + `L${x + w - r},${y(n)} Q${x + w},${y(n)} ${x + w},${y(n) + r} L${x + w},${T + ih} Z`;
+    return `<path d="${path}" fill="var(--series)" data-y="${yr}" data-n="${n}"/>`
+         + `<text x="${x + w / 2}" y="${H - 8}" text-anchor="middle" font-size="${FS}" fill="var(--ink-faint)">${yr.slice(2)}</text>`;
+  }).join("");
+
+  $("#years").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="Dives per year, ${data[0][0]} to ${data[data.length-1][0]}">${g}${bars}</svg>`;
+  $("#years").querySelectorAll("path").forEach(p => {
+    scrub(p, e => showTip(`<b>${p.dataset.y}</b><br>${p.dataset.n} dives`, e), hideTip);
+    p.addEventListener("click", () => { state.year = p.dataset.y; $("#year").value = p.dataset.y; apply(); });
+  });
+}
+
+/* ------------------------------------------------------------ dive profile */
+/* Depth is the chart. Everything else the computer recorded is a band beneath
+   it, sharing the one time axis and the one crosshair.
+
+   Two rules shaped this. First: a second y-scale on top of the depth trace
+   would let any pair of channels be made to cross wherever the scaling happened
+   to put them, which is a picture of the scaling and not of the dive. Bands
+   stacked on a shared x-axis show the same covariance and cannot mislead.
+   Second, the exception that proves it: a decompression ceiling is measured in
+   metres, so it belongs *on* the depth axis. That one really is an overlay --
+   the shaded water is the part of the ascent that was closed, and seeing the
+   trace run along the underside of it is the whole point. */
+const CHANNELS = [
+  { key: "deco", label: "No-stop / deco", unit: "min", colour: "var(--ch-deco)",
+    /* One line, two meanings, and they cannot overlap: a computer counting down
+       a no-stop time is not also owing decompression. The value is whichever
+       applies; the shaded span behind it says when the obligation was live. */
+    value: p => (p.deco != null ? p.deco : p.ndl),
+    has: s => s.some(p => p.deco != null || p.ndl != null) },
+  { key: "temp", label: "Water temperature", unit: "°C", colour: "var(--ch-temp)",
+    value: p => (p.temp != null && p.temp > 0 ? p.temp : null),
+    has: s => s.filter(p => p.temp != null && p.temp > 0).length > 4 },
+  { key: "ppo2", label: "ppO₂", unit: "bar", colour: "var(--ch-ppo2)",
+    value: p => p.ppo2, decimals: 2,
+    has: s => s.some(p => p.ppo2 != null) },
+  { key: "cns", label: "CNS", unit: "%", colour: "var(--ch-cns)",
+    value: p => p.cns, has: s => s.some(p => p.cns != null && p.cns > 0) },
+];
+
+/* Which bands are open, remembered between dives: a rebreather diver who wants
+   ppO2 wants it on every dive, not once. */
+let CH_ON = new Set(["deco", "temp"]);
+try {
+  const saved = localStorage.getItem("channels");
+  if (saved) CH_ON = new Set(JSON.parse(saved));
+} catch (e) { /* private mode: the defaults are fine */ }
+let CEILING_ON = true;
+try {
+  const saved = localStorage.getItem("ceiling");
+  if (saved != null) CEILING_ON = saved === "1";
+} catch (e) { /* as above */ }
+
+function profileChart(dive) {
+  const s = dive.samples;
+  const host = $("#profile"), tHost = $("#channels"), cHost = $("#chtoggles");
+  if (!s || !s.length) {
+    host.innerHTML = `<p class="empty">No profile recorded for this dive.</p>`;
+    tHost.innerHTML = ""; cHost.innerHTML = ""; return;
+  }
+
+  const ts = textScale(), FS = (11 * ts).toFixed(1);
+  const W = 1100, L = 48 * ts, R = 52, T = 16, B = 30 * ts;
+  const iw = W - L - R, mh = 250;              /* main plot height */
+  /* A band has to hold a label above its plot, so it grows with the label. */
+  const BAND = 96 + (ts - 1) * 20, BPLOT = 58; /* each band, and its plot area */
+  const maxT = s[s.length - 1].t || 1;
+  const maxD = Math.max(...s.map(p => p.d)) || 1;
+  const dTop = Math.ceil(maxD / 10) * 10;
+  const x = t => L + (t / maxT) * iw;
+  const y = d => T + (d / dTop) * mh;          /* inverted: surface at the top */
+
+  const stops = s.filter(p => p.stop);
+  const available = CHANNELS.filter(c => c.has(s));
+  const open = available.filter(c => CH_ON.has(c.key));
+  const H = T + mh + B + open.length * BAND;
+
+  /* ---- toggles. Each carries its own colour, so the legend is the control */
+  cHost.innerHTML =
+    (stops.length
+      ? `<button class="chip ch ${CEILING_ON ? "on" : ""}" data-ceiling="1"
+           aria-pressed="${CEILING_ON}"><i style="background:var(--ch-deco)"></i>Deco ceiling</button>`
+      : "")
+    + available.map(c => `<button class="chip ch ${CH_ON.has(c.key) ? "on" : ""}"
+        data-ch="${c.key}" aria-pressed="${CH_ON.has(c.key)}"
+        ><i style="background:${c.colour}"></i>${esc(c.label)}</button>`).join("")
+    + (available.length ? `<span class="chnote">${s.length} samples</span>` : "");
+
+  /* ---- depth grid and axis */
+  let grid = "";
+  const dStep = Math.max(5, Math.round(dTop / 5 / 5) * 5);
+  for (let d = 0; d <= dTop; d += dStep) {
+    grid += `<line x1="${L}" x2="${W - R}" y1="${y(d)}" y2="${y(d)}" stroke="var(--rule)" stroke-width="1"/>`
+          + `<text x="${L - 7}" y="${y(d) + 4 * ts}" text-anchor="end" font-size="${FS}" fill="var(--ink-faint)">${d}</text>`;
+  }
+  const step = maxT > 3600 ? 600 : 300;
+  let ticks = "";
+  for (let t = 0; t <= maxT; t += step) {
+    ticks += `<text x="${x(t)}" y="${H - 8}" text-anchor="middle" font-size="${FS}" fill="var(--ink-faint)">${t / 60}</text>`
+           + `<line x1="${x(t)}" x2="${x(t)}" y1="${T}" y2="${T + mh + open.length * BAND}"
+                stroke="var(--rule)" stroke-width="1" opacity=".45"/>`;
+  }
+
+  /* ---- the depth trace, broken wherever nothing was recorded.
+     A merged dive is several recordings laid end to end, and between them the
+     diver was on the surface with the computer stopped. Carrying the line
+     straight across would assert a depth for minutes nobody measured -- and a
+     computer ends a dive at its own shallow threshold, not at 0.00 m, so that
+     line would sit a metre or two under the surface and look like diving. Same
+     rule the channel bands below already follow. */
+  const gaps = (dive.merge && dive.merge.gaps) || [];
+  const inGap = t => gaps.some(([a, b]) => t > a && t < b);
+  let line = "", area = "", drawing = false, prev = null;
+  for (const p of s) {
+    const broken = prev !== null && inGap((prev.t + p.t) / 2);
+    if (!drawing || broken) {
+      if (drawing) area += ` L${x(prev.t).toFixed(1)},${y(0).toFixed(1)} Z`;
+      line += `M${x(p.t).toFixed(1)},${y(p.d).toFixed(1)}`;
+      area += ` M${x(p.t).toFixed(1)},${y(0).toFixed(1)} L${x(p.t).toFixed(1)},${y(p.d).toFixed(1)}`;
+      drawing = true;
+    } else {
+      line += `L${x(p.t).toFixed(1)},${y(p.d).toFixed(1)}`;
+      area += ` L${x(p.t).toFixed(1)},${y(p.d).toFixed(1)}`;
+    }
+    prev = p;
+  }
+  if (drawing && prev) area += ` L${x(prev.t).toFixed(1)},${y(0).toFixed(1)} Z`;
+
+  /* the surface intervals themselves, named so the break reads as a fact
+     rather than as missing data */
+  let surface = "";
+  for (const [a, b] of gaps) {
+    const w = x(b) - x(a);
+    surface += `<rect x="${x(a).toFixed(1)}" y="${T}" width="${w.toFixed(1)}" height="${mh}"
+                  fill="var(--ink-faint)" opacity=".07"/>`
+             + `<line x1="${x(a).toFixed(1)}" x2="${x(a).toFixed(1)}" y1="${T}" y2="${T + mh}"
+                  stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2 3" opacity=".5"/>`
+             + `<line x1="${x(b).toFixed(1)}" x2="${x(b).toFixed(1)}" y1="${T}" y2="${T + mh}"
+                  stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2 3" opacity=".5"/>`;
+    if (w > 34) surface += `<text x="${(x(a) + w / 2).toFixed(1)}" y="${T + 12}"
+                  text-anchor="middle" font-size="10" fill="var(--ink-faint)">on the surface
+                  ${Math.round((b - a) / 60)} min</text>`;
+  }
+
+  /* ---- the ceiling: water that was closed, drawn in the depth axis' own units.
+     Held at the last posted stop across the gaps between samples, because the
+     obligation did not lift in between -- only the reading did. */
+  let ceiling = "";
+  if (stops.length && CEILING_ON) {
+    const runs = [];
+    let run = null;
+    s.forEach((p, i) => {
+      if (p.stop) {
+        if (!run) run = { from: p.t, points: [] };
+        run.points.push([p.t, p.stop]);
+        run.to = p.t;
+      } else if (run) { runs.push(run); run = null; }
+    });
+    if (run) runs.push(run);
+    for (const r of runs) {
+      let d = `M${x(r.from).toFixed(1)},${y(0).toFixed(1)}`;
+      for (const [t, m] of r.points) d += `L${x(t).toFixed(1)},${y(m).toFixed(1)}`;
+      d += `L${x(r.to).toFixed(1)},${y(0).toFixed(1)}Z`;
+      ceiling += `<path d="${d}" fill="var(--ch-deco-fill)"/>`;
+      let edge = "";
+      r.points.forEach(([t, m], i) => {
+        edge += `${i ? "L" : "M"}${x(t).toFixed(1)},${y(m).toFixed(1)}`;
+      });
+      ceiling += `<path d="${edge}" fill="none" stroke="var(--ch-deco)" stroke-width="1.5"
+                    stroke-linejoin="round"/>`;
+    }
+    const deepest = Math.max(...stops.map(p => p.stop));
+    const at = stops.find(p => p.stop === deepest);
+    ceiling += `<text x="${x(at.t) + 6}" y="${y(deepest) - 6}" font-size="11" font-weight="600"
+        fill="var(--ink)">ceiling ${deepest} m</text>`;
+  }
+
+  /* the single accent: deepest point, direct-labelled so it is never colour-alone */
+  const deep = s.reduce((a, b) => (b.d > a.d ? b : a), s[0]);
+
+  /* ---- the bands */
+  let bands = "", cursors = "";
+  /* Each band's scale is rebuilt per dive. Clearing first matters: these are
+     shared objects, and a stale scale left over from the last dive would put
+     the crosshair's marker at a plausible-looking wrong height. */
+  CHANNELS.forEach(c => { c._by = null; });
+  open.forEach((c, i) => {
+    const top = T + mh + B + i * BAND;
+    const pts = s.map(p => [p.t, c.value(p)]).filter(p => p[1] != null);
+    if (!pts.length) return;
+    const lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
+    const by = v => top + 22 + (hi === lo ? BPLOT / 2 : (1 - (v - lo) / (hi - lo)) * BPLOT);
+    const dec = c.decimals || 0;
+
+    /* a break in the line wherever the channel stops being recorded, rather
+       than a straight segment across a gap that was never measured */
+    let d = "", last = null;
+    for (const [t, v] of pts) {
+      d += (last === null || t - last > maxT / 40 ? "M" : "L")
+        + `${x(t).toFixed(1)},${by(v).toFixed(1)}`;
+      last = t;
+    }
+    /* when the obligation was live, shaded behind its own line */
+    let live = "";
+    if (c.key === "deco") {
+      let from = null;
+      s.forEach((p, j) => {
+        const on = p.deco != null;
+        if (on && from === null) from = p.t;
+        if ((!on || j === s.length - 1) && from !== null) {
+          live += `<rect x="${x(from)}" y="${top + 18}" width="${Math.max(1, x(p.t) - x(from))}"
+                     height="${BPLOT + 8}" fill="var(--ch-deco-fill)"/>`;
+          from = null;
+        }
+      });
+    }
+    bands += `<g>
+      ${live}
+      <line x1="${L}" x2="${W - R}" y1="${top + 14}" y2="${top + 14}" stroke="var(--rule)" stroke-width="1"/>
+      <text x="${L}" y="${top + 10}" font-size="${FS}" fill="var(--ink-faint)">${esc(c.label)} (${esc(c.unit)})</text>
+      <text x="${L - 7}" y="${by(hi) + 4 * ts}" text-anchor="end" font-size="${FS}" fill="var(--ink-faint)">${hi.toFixed(dec)}</text>
+      <text x="${L - 7}" y="${by(lo) + 4 * ts}" text-anchor="end" font-size="${FS}" fill="var(--ink-faint)">${lo.toFixed(dec)}</text>
+      <path d="${d}" fill="none" stroke="${c.colour}" stroke-width="2"
+            stroke-linejoin="round" stroke-linecap="round"/>
+    </g>`;
+    cursors += `<circle class="cdot" data-ch="${c.key}" r="4" fill="${c.colour}"
+                  stroke="var(--surface-sunk)" stroke-width="2" opacity="0"/>`;
+    c._by = by;
+  });
+
+  const summary = `Depth profile to ${maxD.toFixed(1)} metres over ${Math.round(maxT / 60)} minutes`
+    + (stops.length ? `, with a decompression ceiling` : "")
+    + (open.length ? `, and bands for ${open.map(c => c.label).join(", ")}` : "");
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" id="psvg" role="img"
+      aria-label="${esc(summary)}">
+    ${ticks}${grid}
+    ${surface}
+    <path d="${area}" fill="var(--series-fill)"/>
+    ${ceiling}
+    <path data-trace="depth" d="${line}" fill="none" stroke="var(--series)" stroke-width="2"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${x(deep.t)}" cy="${y(deep.d)}" r="4.5" fill="var(--accent-mark)"
+            stroke="var(--surface-sunk)" stroke-width="2"/>
+    <text x="${x(deep.t) + 9}" y="${y(deep.d) + 4 * ts}" font-size="${(12 * ts).toFixed(1)}" font-weight="600"
+          fill="var(--ink)">${deep.d.toFixed(1)} m</text>
+    <text x="${L - 7}" y="${T - 4}" text-anchor="end" font-size="${(10 * ts).toFixed(1)}" fill="var(--ink-faint)">m</text>
+    <text x="${W - R + 6}" y="${H - 8}" font-size="${(10 * ts).toFixed(1)}" fill="var(--ink-faint)">min</text>
+    ${bands}
+    <line id="cross" x1="0" x2="0" y1="${T}" y2="${T + mh + open.length * BAND}"
+          stroke="var(--accent-mark)" stroke-width="1" opacity="0"/>
+    <circle id="dot" r="4" fill="var(--accent-mark)" stroke="var(--surface-sunk)" stroke-width="2" opacity="0"/>
+    ${cursors}
+  </svg>`;
+  tHost.innerHTML = "";
+
+  /* ---- toggles rebuild the chart; the reading is the same, the view is not */
+  cHost.querySelectorAll("[data-ch]").forEach(b => b.addEventListener("click", () => {
+    const k = b.dataset.ch;
+    CH_ON.has(k) ? CH_ON.delete(k) : CH_ON.add(k);
+    try { localStorage.setItem("channels", JSON.stringify([...CH_ON])); } catch (e) {}
+    profileChart(dive);
+  }));
+  const ceilBtn = cHost.querySelector("[data-ceiling]");
+  if (ceilBtn) ceilBtn.addEventListener("click", () => {
+    CEILING_ON = !CEILING_ON;
+    try { localStorage.setItem("ceiling", CEILING_ON ? "1" : "0"); } catch (e) {}
+    profileChart(dive);
+  });
+
+  /* ---- one crosshair, every open channel read at the same instant */
+  const svg = $("#psvg"), cross = $("#cross"), dot = $("#dot");
+  const dots = {};
+  svg.querySelectorAll(".cdot").forEach(c => { dots[c.dataset.ch] = c; });
+  const read = ev => {
+    const box = svg.getBoundingClientRect();
+    const px = (ev.clientX - box.left) / box.width * W;
+    const t = Math.max(0, Math.min(maxT, (px - L) / iw * maxT));
+    let best = s[0];
+    for (const p of s) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+    cross.setAttribute("x1", x(best.t)); cross.setAttribute("x2", x(best.t));
+    cross.setAttribute("opacity", ".55");
+    dot.setAttribute("cx", x(best.t)); dot.setAttribute("cy", y(best.d));
+    dot.setAttribute("opacity", "1");
+
+    let rows = `<b>${Math.floor(best.t / 60)}:${String(best.t % 60).padStart(2, "0")}</b><br>`
+             + `${best.d.toFixed(1)} m`;
+    if (best.stop) rows += ` &middot; ceiling ${best.stop} m`;
+    for (const c of open) {
+      const v = c.value(best), mark = dots[c.key];
+      if (v == null) { if (mark) mark.setAttribute("opacity", "0"); continue; }
+      if (mark && c._by) {
+        mark.setAttribute("cx", x(best.t)); mark.setAttribute("cy", c._by(v));
+        mark.setAttribute("opacity", "1");
+      }
+      const name = c.key === "deco"
+        ? (best.deco != null ? "deco owed" : "no-stop")
+        : c.label;
+      rows += `<br>${esc(name)} ${v.toFixed(c.decimals || 0)} ${esc(c.unit)}`;
+    }
+    if (best.o2) rows += `<br>${best.o2}/${best.he || 0}`;
+    showTip(rows, ev);
+  };
+  /* The crosshair is the centrepiece of the dive detail, and a finger has to be
+     able to drag it. One pointer path covers the trackpad and the phone. */
+  scrub(svg, read, () => {
+    hideTip(); cross.setAttribute("opacity", "0"); dot.setAttribute("opacity", "0");
+    Object.values(dots).forEach(c => c.setAttribute("opacity", "0"));
+  });
+}
+
+/* ------------------------------------------------------------ detail panel */
+let DETAIL = null;
+let EDITABLE = { fields: [], person_roles: [], organisation_roles: [] };
+const ENTITY_CACHE = {};
+/* reference fields hold an id, so they are edited by picking from a list */
+const REF_ENTITY = { site_id: "site", trip_id: "trip", vessel_id: "vessel",
+                     country_id: "country", city_id: "city" };
+const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                                .replace(/"/g, "&quot;");
+
+/* What a stored value is called on screen, for the fields whose vocabulary is
+   not readable as stored. The database keeps the value ("moderate", 3) because
+   that is what sorts and filters; the page shows the word. A field missing
+   here shows its value as it is. Labels only -- the list of what may be chosen
+   still comes from the database (choicesFor), so a value added there without a
+   label here shows up bare rather than not at all. */
+const CURRENT_LABELS = { none: "None", light: "Light", moderate: "Moderate",
+                         fast: "Fast", extreme: "Extreme" };
+const CHOICE_LABELS = {
+  current_surface: CURRENT_LABELS,
+  current_bottom: CURRENT_LABELS,
+  /* The Douglas sea scale as the WMO publishes it, with the wave height,
+     because "4" means nothing on a boat and "1.25-2.5 m" means a lot. */
+  sea_state: {
+    0: "0 – Calm (glassy), 0 m",          1: "1 – Calm (rippled), 0–0.1 m",
+    2: "2 – Smooth, 0.1–0.5 m",           3: "3 – Slight, 0.5–1.25 m",
+    4: "4 – Moderate, 1.25–2.5 m",        5: "5 – Rough, 2.5–4 m",
+    6: "6 – Very rough, 4–6 m",           7: "7 – High, 6–9 m",
+    8: "8 – Very high, 9–14 m",           9: "9 – Phenomenal, over 14 m",
+  },
+};
+const choiceLabel = (field, v) => {
+  const labels = CHOICE_LABELS[field];
+  return labels && labels[v] != null ? labels[v] : String(v);
+};
+
+/* UTC offsets as they are said: UTC+4, UTC+5:30, UTC−5. The field holds
+   seconds, and showing it as seconds/3600 is how a typed "4" -- four seconds
+   -- came out as "0.0011 h" and looked like a rounding quirk. */
+const fmtOffset = s => {
+  if (s == null) return "unknown";
+  const a = Math.abs(s), h = Math.floor(a / 3600), m = Math.round((a % 3600) / 60);
+  return `UTC${s < 0 ? "−" : "+"}${h}${m ? ":" + String(m).padStart(2, "0") : ""}`;
+};
+/* The zones offered when correcting one: every whole hour from −12 to +14 and
+   the half- and three-quarter-hour zones actually in use. The writer accepts
+   any quarter-hour in that range, so this list is a convenience, not the
+   rule -- a dive already holding a zone not listed keeps it in the picker. */
+const OFFSET_CHOICES = (() => {
+  const hours = [];
+  for (let h = -12; h <= 14; h++) hours.push(h * 3600);
+  const odd = [3.5, 4.5, 5.5, 5.75, 6.5, 9.5, 10.5, 12.75, -3.5, -9.5]
+    .map(h => Math.round(h * 3600));
+  return [...hours, ...odd].sort((a, b) => a - b);
+})();
+
+/* label, the field it maps to (null = not editable at all), how to display it */
+const DETAIL_FIELDS = [
+  ["Date & time",  "started_local",      d => (d.started_local || "").slice(0, 16)],
+  ["UTC offset",   "utc_offset_seconds", d => fmtOffset(d.utc_offset_seconds)],
+  ["Dive number",  "dive_number",        d => d.dive_number ?? "—"],
+  ["Max depth",    "max_depth_m",        d => fmtD(d.max_depth_m)],
+  ["Average depth", null,                d => fmtD(d.avg_depth_m)],
+  ["Duration",     "duration_seconds",   d => fmtT(d.duration_seconds)],
+  ["Water temp",   "water_temp_c",       d => d.water_temp_c != null ? d.water_temp_c + " °C" : "—"],
+  ["Site",         "site_id",            d => d.site || "—"],
+  ["Country",      "country_id",         d => d.country || "—"],
+  ["Trip",         "trip_id",            d => d.trip || "—"],
+  ["Boat",         "vessel_id",          d => d.vessel || "—"],
+  ["Supply mode",  "supply_mode",        d => d.supply_mode || "—"],
+  ["O₂ % (logged)", "o2_percent",         d => d.o2_percent ?? "—"],
+  ["He % (logged)", "he_percent",         d => d.he_percent ?? "—"],
+  ["Suit",         "suit",               d => d.suit || "—"],
+  ["Weight",       "weight_lb",          d => lb(d.weight_lb)],
+  ["Visibility",   "visibility",         d => d.visibility ?? "—"],
+  /* conditions on the day, beside the visibility they go with */
+  ["Current (surface)", "current_surface", d => d.current_surface == null ? "—"
+                                              : choiceLabel("current_surface", d.current_surface)],
+  ["Current (bottom)",  "current_bottom",  d => d.current_bottom == null ? "—"
+                                              : choiceLabel("current_bottom", d.current_bottom)],
+  ["Sea state",    "sea_state",          d => d.sea_state == null ? "—"
+                                              : choiceLabel("sea_state", d.sea_state)],
+  ["Weather",      "weather",            d => d.weather || "—"],
+  ["Rating",       "rating",             d => d.rating ?? "—"],
+  ["Computer",     "computer_normalised", d => d.computer_normalised || "—"],
+  /* The computer's own setting, so it is shown and never offered for
+     correction: no field, therefore locked, whatever the whitelist says. */
+  ["Gradient factors", null,             d => d.gradient_factors || "—"],
+  ["Deco",         null,                 d => d.is_deco ? "yes" : "no"],
+];
+
+/* Once a dive has cylinders, its gas is what the cylinders say, and the two
+   dive-level rows show the cylinders' main mix instead of the logged value.
+   Read-only there, because editing them would correct a stored value the
+   page is no longer showing -- the change belongs on the cylinder, a few
+   lines down. The logged value is not touched: it is still in the database,
+   still bulk-editable, and comes back the moment the cylinders go. A dive
+   whose cylinders name no main mix (only oxygen recorded, the diluent not
+   filled in yet, or only imported cylinders he has never touched -- their
+   purposes were guessed) has nothing to derive, so the logged value shows and
+   stays editable exactly as before. */
+const FROM_CYLINDERS = { o2_percent: "mix_o2_percent", he_percent: "mix_he_percent" };
+const fromCylinders = (d, field) => !!FROM_CYLINDERS[field] && d.mix_gas_id != null;
+
+const specFor = (field, entity = "dive") =>
+  EDITABLE.fields.find(f => f.entity === entity && f.field === field) || null;
+
+async function entityList(kind) {
+  if (!ENTITY_CACHE[kind])
+    ENTITY_CACHE[kind] = await (await fetch("/api/entities/" + kind)).json();
+  return ENTITY_CACHE[kind];
+}
+
+function showError(message) {
+  $("#derr").textContent = message || "";
+  if (message) setTimeout(() => { $("#derr").textContent = ""; }, 6000);
+}
+
+async function openDive(id) {
+  SEL = id; draw();
+  DETAIL = await (await fetch("/api/dive/" + id)).json();
+  renderDetail();
+  $("#detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* Everything above the dive table is a figure over the whole log: the stat
+   tiles, the time on the loop, the dives-per-year chart. Any write can move
+   one of them -- a dive type added, a duration corrected, a dive hidden or
+   merged away -- and the response to that write does not say which. So the
+   page asks again.
+
+   It is one function because it was three call sites and only two of them
+   remembered. Logging a dive refreshed these and importing refreshed these;
+   every inline edit did not, so adding MCCR to a dive left "time on the loop"
+   showing the old total until the page was reloaded, with nothing on screen
+   suggesting it was stale. Anything that writes calls this. */
+async function refreshStats() {
+  STATS = await (await fetch("/api/stats")).json();
+  tiles(); loopTiles(); yearChart();
+}
+
+async function reloadDive() {
+  DETAIL = await (await fetch("/api/dive/" + DETAIL.id)).json();
+  renderDetail();
+  DIVES = await (await fetch("/api/dives")).json();   /* the table may have changed */
+  apply();
+  await refreshStats();
+}
+
+function renderDetail() {
+  const d = DETAIL;
+  $("#detail").classList.add("open");
+  $("#dtitle").textContent = `Dive ${d.dive_number ?? d.id} — ${d.site || "unknown site"}`
+    + (d.country ? `, ${d.country}` : "");
+  profileChart(d);
+
+  $("#dhidden").innerHTML = (d.deleted_at
+    ? `<div class="hidden-note"><b>This dive is hidden.</b> It is still in the database
+       with its profile intact — hidden ${d.deleted_at.slice(0, 16)}
+       ${d.deleted_reason ? `· ${esc(d.deleted_reason)}` : ""}</div>` : "")
+    + mergeNote(d);
+  /* the links inside that note are the only route back to a merged-away dive */
+  for (const a of $("#dhidden").querySelectorAll("[data-open]"))
+    a.addEventListener("click", e => { e.preventDefault(); openDive(+a.dataset.open); });
+  $("#hidedive").textContent = d.deleted_at ? "Restore this dive" : "Hide this dive";
+  $("#unmergedive").hidden = !(d.merge && d.merge.is_merge);
+
+  /* fields, with a correction badge where the Owner has overridden the import */
+  $("#dfields").innerHTML = DETAIL_FIELDS.map(([label, field, show]) => {
+    const derived = fromCylinders(d, field);
+    if (derived) {
+      const purpose = d.mix_purpose || "main";
+      return `<div><span>${label.replace("(logged)", "(cylinders)")}</span>
+        <b class="locked" title="the main mix of this dive's cylinders, from the ${
+          esc(purpose)} cylinder. Change it under Cylinders; the logged value (${
+          esc(d[field] ?? "—")}) is kept"
+        >${esc(d[FROM_CYLINDERS[field]] ?? "—")}</b><span class="fixed"
+          style="color:var(--ink-faint)">from ${esc(purpose)} cylinder</span></div>`;
+    }
+    const editable = WRITABLE && field && specFor(field);
+    const override = field && d.overrides && d.overrides[field];
+    /* The correction itself is worth seeing from a phone -- it says the value
+       on screen is the Owner's, not the importer's. Only the undo is a write. */
+    const badge = override
+      ? `<span class="fixed">corrected from ${esc(override.imported_was ?? "—")}
+           ${WRITABLE ? `<button data-revert="${field}">undo</button>` : ""}</span>` : "";
+    return `<div><span>${label}</span>
+      <b class="${editable ? "edit" : "locked"}" ${editable ? `data-field="${field}"` : ""}
+         title="${editable ? "click to correct"
+            : WRITABLE ? "recorded by the dive computer — not editable"
+            : "read-only: editing happens on the Mac"}"
+      >${esc(show(d))}</b>${badge}</div>`;
+  }).join("");
+
+  $("#dfields").querySelectorAll("b.edit").forEach(b =>
+    b.addEventListener("click", () => editField(b, b.dataset.field)));
+  $("#dfields").querySelectorAll("button[data-revert]").forEach(b =>
+    b.addEventListener("click", async () => {
+      try { await post("/api/edit/revert",
+              { entity: "dive", id: d.id, field: b.dataset.revert }); await reloadDive(); }
+      catch (e) { showError(e.message); }
+    }));
+
+  renderLinks();
+  renderDivePhotos();
+
+  renderNoteBox("notes");
+  renderNoteBox("issues");
+}
+
+/* The dive's own words, in two boxes. General notes is the story of the dive;
+   Improvements / Issues is what to change next time, split out because the
+   Owner had been ending most notes with a "Changes / Improvements to note"
+   section and could neither search those on their own nor read down them.
+   One renderer and one editor for both, so they cannot drift into behaving
+   differently. An empty box stays out of the way, as the notes always did. */
+const NOTE_BOXES = {
+  notes:  { sec: "#dnotessec",  box: "#dnotes" },
+  issues: { sec: "#dissuessec", box: "#dissues" },
+};
+
+function renderNoteBox(field) {
+  const { sec, box } = NOTE_BOXES[field];
+  const text = DETAIL[field];
+  $(box).textContent = text || "";
+  $(sec).hidden = !text;
+}
+
+/* A dive carries as many cylinders as it carries. A closed-circuit dive has
+   oxygen and at least one diluent; bail out and you are on something else
+   again. One gas per dive cannot say any of that, so cylinders are a list. */
+const mixOf = g => {
+  const o2 = g.o2_percent, he = g.he_percent || 0;
+  if (o2 == null) return "—";
+  if (o2 >= 99) return "O₂";
+  if (he > 0) return `${Math.round(o2)}/${Math.round(he)}`;
+  return Math.round(o2) === 21 ? "Air" : "EAN" + Math.round(o2);
+};
+
+function gasSection(d) {
+  const rows = (d.gas || []).map(g => `<tr>
+    <td><b class="edit" data-gas="${g.id}" data-gfield="purpose"
+        >${esc(g.purpose_label || g.purpose || "—")}</b>${
+        g.purpose_source === "derived"
+          ? `<span class="fixed" style="color:var(--ink-faint)">inferred</span>` : ""}</td>
+    <td>${esc(mixOf(g))}</td>
+    <td class="num"><b class="edit" data-gas="${g.id}" data-gfield="o2_percent"
+        >${g.o2_percent ?? "—"}</b></td>
+    <td class="num"><b class="edit" data-gas="${g.id}" data-gfield="he_percent"
+        >${g.he_percent ?? "—"}</b></td>
+    <td class="num"><b class="edit" data-gas="${g.id}" data-gfield="tank_size_l"
+        >${g.tank_size_l ?? "—"}</b></td>
+    <td class="num"><b class="edit" data-gas="${g.id}" data-gfield="pressure_start_bar"
+        >${g.pressure_start_bar ?? "—"}</b></td>
+    <td class="num"><b class="edit" data-gas="${g.id}" data-gfield="pressure_end_bar"
+        >${g.pressure_end_bar ?? "—"}</b></td>
+    <td class="num">${g.litres_used != null ? g.litres_used : "—"}</td>
+    <td class="num"${g.sac_reason ? ` title="${esc(g.sac_reason)}"` : ""}>${
+        g.sac_l_per_min != null
+          ? `${g.sac_l_per_min}${g.sac_from_segments
+              ? `<span class="fixed" style="color:var(--ink-faint)" ` +
+                `title="timed from the computer's own gas segments">·</span>` : ""}`
+          : `<span style="color:var(--ink-faint);cursor:help">—</span>`}</td>
+    ${WRITABLE ? `<td><button data-rmgas="${g.id}" title="remove cylinder"
+        style="border:0;background:none;cursor:pointer;color:var(--ink-faint)">✕</button></td>`
+      : ""}
+  </tr>`).join("");
+
+  const purposes = (EDITABLE.gas_purposes || []).map(p =>
+    `<option value="${p.code}">${p.label}</option>`).join("");
+  const seed = (d.supply_mode === "closed_circuit" && !(d.gas || []).length)
+    ? `<button id="seedccr">Add oxygen + diluent</button>` : "";
+
+  return `<div style="margin-top:14px">
+    <span style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+      color:var(--ink-faint)">Cylinders</span>
+    ${rows ? `<div class="scroll"><table style="margin-top:4px">
+      <thead><tr><th>Purpose</th><th>Mix</th><th class="num">O₂ %</th>
+        <th class="num">He %</th><th class="num">Size L</th>
+        <th class="num">Start bar</th><th class="num">End bar</th>
+        <th class="num" title="free gas breathed from this cylinder, in litres"
+          >Used L</th>
+        <th class="num" title="litres per minute at surface pressure">RMV</th>
+        ${WRITABLE ? "<th></th>" : ""}</tr></thead>
+      <tbody>${rows}</tbody></table></div>`
+      : `<div class="chips"><span class="chip">none recorded</span></div>`}
+    ${WRITABLE ? `<div class="addrow">
+      <select id="gaspurpose">${purposes}</select>
+      <input id="gaso2" type="number" step="any" placeholder="O₂ %" style="width:90px">
+      <input id="gashe" type="number" step="any" placeholder="He %" style="width:90px">
+      <button id="addgas">Add cylinder</button>${seed}
+    </div>` : ""}${circuitSwitches(d)}${gasTimeline(d)}</div>`;
+}
+
+// When each gas was breathed, straight from the computer. On a rebreather the
+// loop/open-circuit column is the bailout record: the moment you came off the
+// machine and what you breathed while you were off it.
+const clock = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+// The switch itself, to the sample. The timeline below says which gas over
+// which stretch; this says the moment the diver came off the machine and how
+// deep he was when he did. Only dives with a Shearwater binary profile have it.
+function circuitSwitches(d) {
+  const sw = d.circuit_switches || [];
+  if (!sw.length) return "";
+  const items = sw.map(s => `<span class="chip">${clock(s.t)} · ${
+      s.to === "open_circuit" ? "off the loop" : "back on the loop"}${
+      s.depth_m != null ? ` · ${s.depth_m.toFixed(1)} m` : ""}</span>`).join("");
+  return `<div style="margin-top:14px">
+    <span style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+      color:var(--ink-faint)">Circuit switches</span>
+    <div class="chips" style="margin-top:4px">${items}</div></div>`;
+}
+
+function gasTimeline(d) {
+  const segs = d.gas_segments || [];
+  if (segs.length < 2) return "";          // a single segment is just the dive
+  const bailout = segs.some(s => s.circuit_mode === "closed_circuit")
+                && segs.some(s => s.circuit_mode === "open_circuit");
+  const rows = segs.map(s => `<tr>
+    <td class="num">${s.start_seconds != null ? clock(s.start_seconds) : "—"}</td>
+    <td class="num">${s.end_seconds != null ? clock(s.end_seconds) : "—"}</td>
+    <td>${esc(mixOf(s))}</td>
+    <td>${s.circuit_mode === "closed_circuit" ? "loop"
+        : s.circuit_mode === "open_circuit" ? "open circuit" : "—"}</td>
+    <td class="num">${s.avg_depth_m != null ? s.avg_depth_m.toFixed(1) : "—"}</td>
+    <td class="num">${s.pressure_start_bar ?? "—"}</td>
+    <td class="num">${s.pressure_end_bar ?? "—"}</td>
+    <td>${esc(s.transmitter || "")}</td>
+  </tr>`).join("");
+  return `<div style="margin-top:14px">
+    <span style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+      color:var(--ink-faint)">Gas timeline${
+      bailout ? ` · came off the loop` : ""}</span>
+    <div class="scroll"><table style="margin-top:4px">
+      <thead><tr><th class="num">From</th><th class="num">To</th><th>Mix</th>
+        <th>Circuit</th><th class="num">Avg m</th>
+        <th class="num">Start bar</th><th class="num">End bar</th>
+        <th>Sensor</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`;
+}
+
+function linkGroup(title, kind, items, roles) {
+  /* Read-only leaves the chips and takes away everything that acts on them.
+     Not hidden with CSS: the picker is never built, so there is no ＋ New… on
+     the page to be found, and nothing to tap that would answer 403. */
+  const chips = items.map(i => `<span class="chip${WRITABLE ? " del" : ""}">${esc(i.name)}${
+      i.role ? ` · ${esc(i.role)}` : ""}${WRITABLE
+      ? `<button data-unlink="${kind}" data-id="${i.id}"
+      data-role="${esc(i.role || "")}" title="remove">✕</button>` : ""}</span>`).join("");
+  const roleSelect = roles
+    ? `<select data-role-for="${kind}">${roles.map(r =>
+        `<option value="${r.code}">${r.label}</option>`).join("")}</select>` : "";
+  /* Kit is known by its maker as well as its name; nothing else has one. */
+  const makerInput = kind === "equipment"
+    ? `<input data-maker-for="${kind}" placeholder="maker (optional)" hidden>` : "";
+  const add = WRITABLE
+    ? `<div class="addrow"><select data-add-for="${kind}"></select>
+      <input data-new-for="${kind}" placeholder="name of the new ${title.toLowerCase()}"
+             hidden>${makerInput}${roleSelect}
+      <button data-add="${kind}">Add</button></div>` : "";
+  return `<div style="margin-top:12px">
+    <span style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+      color:var(--ink-faint)">${title}</span>
+    <div class="chips">${chips || '<span class="chip">none</span>'}</div>
+    ${add}</div>`;
+}
+
+async function renderLinks() {
+  const d = DETAIL;
+  const extras = Object.entries(d.extras || {}).map(([k, v]) => `${k}: ${v}`);
+
+  $("#dchips").innerHTML =
+      linkGroup("People", "person", d.people || [], EDITABLE.person_roles)
+    + linkGroup("Dive type", "dive_type", d.dive_types || [], null)
+    + linkGroup("Kit", "equipment", d.equipment || [], null)
+    + linkGroup("Operator", "organisation", d.organisations || [], EDITABLE.organisation_roles)
+    + gasSection(d)
+    + (extras.length ? `<div style="margin-top:12px"><span style="font-size:11px;
+        text-transform:uppercase;letter-spacing:.07em;color:var(--ink-faint)">Recorded
+        extras</span><div class="chips">${extras.map(e =>
+        `<span class="chip">${esc(e)}</span>`).join("")}</div></div>` : "");
+
+  for (const select of $("#dchips").querySelectorAll("select[data-add-for]")) {
+    const kind = select.dataset.addFor;
+    const list = await entityList(kind);
+    /* Meeting a new buddy, diving a new site, using a new boat: the list can
+       never be complete, so every picker can also create. */
+    select.innerHTML = `<option value="__new__">＋ New…</option>`
+      + list.map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join("");
+    if (list.length) select.value = String(list[0].id);
+    const nameInput = $(`input[data-new-for="${kind}"]`);
+    const makerInput = kind === "equipment" ? $(`input[data-maker-for="${kind}"]`) : null;
+    const asNew = () => {
+      nameInput.hidden = select.value !== "__new__";
+      if (makerInput) makerInput.hidden = nameInput.hidden;
+    };
+    asNew();
+    select.addEventListener("change", () => {
+      asNew();
+      if (!nameInput.hidden) nameInput.focus();
+    });
+  }
+  $("#dchips").querySelectorAll("button[data-add]").forEach(b =>
+    b.addEventListener("click", async () => {
+      const kind = b.dataset.add;
+      const select = $(`select[data-add-for="${kind}"]`);
+      const nameInput = $(`input[data-new-for="${kind}"]`);
+      const roleEl = $(`select[data-role-for="${kind}"]`);
+      try {
+        let targetId = select.value;
+        if (targetId === "__new__") {
+          const name = (nameInput.value || "").trim();
+          if (!name) { showError(`give the new ${kind.replace("_", " ")} a name`); return; }
+          const fields = { kind, name };
+          const makerInput = kind === "equipment"
+            ? $(`input[data-maker-for="${kind}"]`) : null;
+          if (makerInput) fields.manufacturer = (makerInput.value || "").trim();
+          const created = await post("/api/edit/entity", fields);
+          delete ENTITY_CACHE[kind];          /* the list has grown */
+          targetId = created.id;
+          nameInput.value = "";
+          if (makerInput) makerInput.value = "";
+        }
+        await post("/api/edit/link", { dive_id: DETAIL.id, kind,
+          target_id: Number(targetId), role: roleEl ? roleEl.value : null });
+        await reloadDive();
+      } catch (e) { showError(e.message); }
+    }));
+  /* cylinders: inline edits, add, remove, and the CCR starter pair */
+  $("#dchips").querySelectorAll("b.edit[data-gas]").forEach(b =>
+    b.addEventListener("click", () =>
+      editField(b, b.dataset.gfield, "dive_gas", Number(b.dataset.gas))));
+  $("#dchips").querySelectorAll("button[data-rmgas]").forEach(b =>
+    b.addEventListener("click", async () => {
+      try { await post("/api/edit/gas/remove", { gas_id: Number(b.dataset.rmgas) });
+            await reloadDive(); }
+      catch (e) { showError(e.message); }
+    }));
+  /* Oxygen for injection is 100/0 on every rebreather he dives, so choosing
+     it fills the mix in -- into blank boxes only, never over what he typed.
+     Switching away again takes back only what was filled in for him: a value
+     he typed stays, and one the page typed must not quietly ride along onto a
+     diluent. The server applies the same default to a POST with no mix. */
+  const gasPurpose = $("#gaspurpose");
+  if (gasPurpose) {
+    const fill = () => oxygenDefaults(gasPurpose.value, $("#gaso2"), $("#gashe"));
+    gasPurpose.addEventListener("change", fill);
+    /* Oxygen sorts first, so it is what the picker opens on. */
+    fill();
+  }
+  const addGas = $("#addgas");
+  if (addGas) addGas.addEventListener("click", async () => {
+    try {
+      await post("/api/edit/gas/add", { dive_id: DETAIL.id,
+        purpose: $("#gaspurpose").value,
+        o2_percent: $("#gaso2").value === "" ? null : Number($("#gaso2").value),
+        he_percent: $("#gashe").value === "" ? null : Number($("#gashe").value) });
+      await reloadDive();
+    } catch (e) { showError(e.message); }
+  });
+  const seed = $("#seedccr");
+  if (seed) seed.addEventListener("click", async () => {
+    try { await post("/api/edit/gas/seed-ccr", { dive_id: DETAIL.id }); await reloadDive(); }
+    catch (e) { showError(e.message); }
+  });
+
+  $("#dchips").querySelectorAll("button[data-unlink]").forEach(b =>
+    b.addEventListener("click", async () => {
+      try {
+        await post("/api/edit/unlink", { dive_id: DETAIL.id, kind: b.dataset.unlink,
+          target_id: Number(b.dataset.id), role: b.dataset.role || null });
+        await reloadDive();
+      } catch (e) { showError(e.message); }
+    }));
+}
+
+function oxygenDefaults(purpose, o2Box, heBox) {
+  for (const [box, value] of [[o2Box, "100"], [heBox, "0"]]) {
+    if (!box) continue;
+    if (purpose === "oxygen") {
+      if (box.value === "") { box.value = value; box.dataset.auto = value; }
+    } else if (box.dataset.auto != null) {
+      /* still exactly what was filled in: it was never his, so it goes */
+      if (box.value === box.dataset.auto) box.value = "";
+      delete box.dataset.auto;
+    }
+  }
+}
+
+async function editField(element, field, entity = "dive", entityId = null) {
+  if (!WRITABLE) return;              /* the server would refuse it regardless */
+  const id = entityId ?? DETAIL.id;
+  const spec = specFor(field, entity);
+  if (!spec || element.dataset.editing) return;
+  element.dataset.editing = "1";
+  const current = entity === "dive" ? DETAIL[field]
+    : (DETAIL.gas.find(g => g.id === entityId) || {})[field];
+  let input;
+
+  if (REF_ENTITY[field]) {
+    const kind = REF_ENTITY[field];
+    const list = await entityList(kind);
+    input = document.createElement("select");
+    input.innerHTML = `<option value="">— none —</option>`
+      + `<option value="__new__">＋ New…</option>`
+      + list.map(i => `<option value="${i.id}" ${i.id === current ? "selected" : ""}
+          >${esc(i.name)}</option>`).join("");
+    /* A new dive site is at least as common as an existing one. */
+    input.addEventListener("change", async () => {
+      if (input.value !== "__new__") return;
+      const name = (prompt(`Name of the new ${kind}`) || "").trim();
+      if (!name) { input.value = current ?? ""; return; }
+      try {
+        const created = await post("/api/edit/entity", { kind, name });
+        delete ENTITY_CACHE[kind];
+        await post("/api/edit/field",
+          { entity: "dive", id: DETAIL.id, field, value: created.id });
+        done = true;
+        await reloadDive();
+      } catch (e) { showError(e.message); renderDetail(); }
+    });
+  } else if (entity === "dive_gas" && field === "purpose") {
+    input = document.createElement("select");
+    input.innerHTML = (EDITABLE.gas_purposes || []).map(p =>
+      `<option value="${p.code}" ${p.code === current ? "selected" : ""}>${p.label}</option>`
+    ).join("");
+  } else if (entity === "dive" && field === "utc_offset_seconds") {
+    /* A list, not a box: there is no way to pick four seconds from it. */
+    const offered = OFFSET_CHOICES.includes(current) || current == null
+      ? OFFSET_CHOICES : [...OFFSET_CHOICES, current].sort((a, b) => a - b);
+    input = document.createElement("select");
+    input.innerHTML = `<option value="" ${current == null ? "selected" : ""}>unknown</option>`
+      + offered.map(v => `<option value="${v}" ${v === current ? "selected" : ""}>${
+          fmtOffset(v)}</option>`).join("");
+  } else if (choicesFor(field)) {
+    /* "" is "not recorded". It reads "— not recorded —" rather than "none"
+       wherever "none" is itself an answer, as it is for a current. */
+    const blank = (choicesFor(field) || []).includes("none") ? "— not recorded —" : "— none —";
+    input = document.createElement("select");
+    input.innerHTML = ["", ...choicesFor(field)].map(v =>
+      `<option value="${v}" ${v === current ? "selected" : ""}>${
+        v === "" ? blank : esc(choiceLabel(field, v))}</option>`).join("");
+  } else {
+    input = document.createElement("input");
+    input.type = spec.kind === "number" ? "number" : "text";
+    if (spec.kind === "number") input.step = "any";
+    input.value = current ?? "";
+    if (field === "started_local") input.placeholder = "YYYY-MM-DD HH:MM:SS";
+  }
+
+  element.replaceWith(input);
+  input.focus();
+  if (input.select) input.select();
+
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    if (!commit) { renderDetail(); return; }
+    let value = input.value;
+    /* "＋ New…" is handled by its own change handler; never save it as a value */
+    if (value === "__new__") { renderDetail(); return; }
+    if (value === "") value = null;
+    else if (spec.kind === "number" || REF_ENTITY[field]) value = Number(value);
+    /* The same offset is still a change when it was the country's guess:
+       choosing it makes it his (offset_source 'user'). */
+    const confirmsZone = entity === "dive" && field === "utc_offset_seconds"
+      && value != null && DETAIL.offset_source !== "user";
+    if (!confirmsZone && unchangedEdit(current, value)) { renderDetail(); return; }
+    input.classList.add("saving");
+    try {
+      await post("/api/edit/field", { entity, id, field, value });
+      await reloadDive();
+    } catch (e) { showError(e.message); renderDetail(); }
+  };
+  input.addEventListener("blur", () => finish(true));
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    if (e.key === "Escape") { done = true; renderDetail(); }
+  });
+}
+
+async function editNotes(field = "notes") {
+  if (!DETAIL || !WRITABLE) return;   /* the server would refuse it regardless */
+  const { sec, box } = NOTE_BOXES[field];
+  const area = document.createElement("textarea");
+  area.value = DETAIL[field] || "";
+  area.style.cssText = "width:100%;min-height:160px;padding:10px;border-radius:8px;"
+    + "border:1px solid var(--rule);background:var(--surface);color:var(--ink);font:inherit";
+  const n = $(box);
+  $(sec).hidden = false; n.textContent = ""; n.appendChild(area); area.focus();
+  const save = document.createElement("button");
+  save.textContent = field === "notes" ? "Save notes" : "Save improvements / issues";
+  save.style.marginTop = "8px";
+  n.appendChild(save);
+  save.addEventListener("click", async () => {
+    const value = area.value || null;
+    /* Saving what was already there is not an edit; see unchangedEdit. */
+    if (unchangedEdit(DETAIL[field], value)) { renderDetail(); return; }
+    try {
+      await post("/api/edit/field", { entity: "dive", id: DETAIL.id, field, value });
+      await reloadDive();
+    } catch (e) { showError(e.message); }
+  });
+}
+
+/* Whether a value about to be saved is the one the field already holds.
+   Clicking into a field and out again used to POST it regardless, and each one
+   became a line in the edit history ("notes: empty -> empty") and an override
+   pinning a value nobody had corrected. Blank is blank -- a text box hands back
+   "" for the NULL it was shown. The writer refuses these too; asking here as
+   well saves the round trip and the page reload. */
+function unchangedEdit(current, value) {
+  const blank = v => v == null || v === "";
+  if (blank(current) || blank(value)) return blank(current) && blank(value);
+  return current === value
+    || (typeof current === "number" && Number(value) === current);
+}
+
+/* What this dive has to do with a merge, said from whichever end you are on.
+   A part has dropped out of the dive list entirely, so the link to the dive it
+   now lives inside is the only way back to it. */
+function mergeNote(d) {
+  const m = d.merge || {};
+  if (m.is_merge) {
+    const parts = (m.parts || []).map(p =>
+      `<a href="#" data-open="${p.dive_id}">dive ${p.dive_number ?? p.dive_id}</a>`).join(", ");
+    return `<div class="hidden-note"><b>One dive, logged as ${
+      (m.parts || []).length}.</b> Merged from ${parts}. Dive time ${
+      Math.round(m.span_seconds / 60)} min from first descent to final surfacing,
+      of which ${Math.round(m.submerged_seconds / 60)} min underwater and ${
+      Math.round(m.gap_seconds / 60)} min on the surface — gas figures use the
+      underwater time only. The originals are hidden, not deleted.
+      ${m.reason ? `· ${esc(m.reason)}` : ""}</div>`;
+  }
+  if (m.merged_into) {
+    return `<div class="hidden-note">This dive is part of
+      <a href="#" data-open="${m.merged_into}">dive ${
+        m.merged_into_number ?? m.merged_into}</a>, which is where it is logged now.</div>`;
+  }
+  return "";
+}
+
+async function unmergeDive() {
+  if (!DETAIL) return;
+  if (!confirm(`Unmerge dive ${DETAIL.dive_number ?? DETAIL.id}?\n\n`
+      + "The original dives come back exactly as they were. This merged record "
+      + "is hidden rather than deleted, so anything you typed on it is kept."))
+    return;
+  try {
+    const r = await post("/api/edit/unmerge", { dive_id: DETAIL.id });
+    DIVES = await (await fetch("/api/dives")).json();
+    apply();
+    await refreshStats();
+    await openDive((r.restored_ids && r.restored_ids[0]) || DETAIL.id);
+    if (r.kept_hidden && r.kept_hidden.length)
+      showError(`restored ${r.restored.join(", ")}; ${r.kept_hidden.join(", ")} stayed hidden`);
+  } catch (e) { showError(e.message); }
+}
+
+async function toggleHide() {
+  if (!DETAIL) return;
+  const hiding = !DETAIL.deleted_at;
+  if (hiding && !confirm(
+      `Hide dive ${DETAIL.dive_number ?? DETAIL.id}?\n\n`
+      + "It stays in the database with its profile intact and can be restored.")) return;
+  try {
+    const reason = hiding ? (prompt("Reason (optional)") || null) : null;
+    await post(hiding ? "/api/edit/hide" : "/api/edit/restore",
+      { dive_id: DETAIL.id, reason });
+    await reloadDive();
+  } catch (e) { showError(e.message); }
+}
+
+async function loadKitSets() {
+  const sets = await entityList("kit_set");
+  $("#kitset").innerHTML = sets.length
+    ? sets.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("")
+    : `<option value="">no kit sets yet</option>`;
+}
+
+async function loadHistory() {
+  const rows = await (await fetch("/api/history")).json();
+  /* Render everything the server sends. It was showing half of it: the server
+     returns the most recent 200 and the page sliced that to 100 again, so a
+     hundred changes were fetched and silently dropped. On a page of its own
+     that matters more, and the count below says what is on screen rather than
+     implying it is the whole record. */
+  $("#history").innerHTML = rows.length
+    ? rows.map(r => `<div>${r.at.slice(0, 16).replace("T", " ")} ·
+        <b>${r.action}</b> ${r.entity}${r.entity_id ? " " + r.entity_id : ""}
+        ${r.field ? "· " + r.field : ""}
+        ${r.old_value != null ? `· from ${esc(String(r.old_value).slice(0, 40))}` : ""}
+        ${r.new_value != null ? `· to ${esc(String(r.new_value).slice(0, 40))}` : ""}
+        ${r.note ? `· ${esc(r.note)}` : ""}</div>`).join("")
+    : `<div>No edits yet.</div>`;
+  $("#histnote").textContent = rows.length
+    ? `Showing the ${rows.length} most recent changes. The full record is kept
+       in the database and is never deleted.`
+    : "";
+}
+
+/* ---------------------------------------------------------------- explore */
+const LABELS = {
+  equipment: "Equipment", dive_type: "Dive type", operator: "Operator",
+  buddy: "Buddy", divemaster: "Divemaster", site: "Site", country: "Country",
+  trip: "Trip", vessel: "Boat", computer: "Computer",
+  supply_mode: "Supply mode", suit: "Suit",
+};
+const EXPLORE = { dim: "operator", rows: [] };
+const CHART_ROWS = 18;   /* the rest stay in the table below, not squeezed in */
+
+async function loadExplore(dim) {
+  EXPLORE.dim = dim;
+  EXPLORE.rows = await (await fetch("/api/breakdown/" + dim)).json();
+  document.querySelectorAll("#dims button").forEach(b =>
+    b.classList.toggle("on", b.dataset.d === dim));
+  $("#bhead").textContent = LABELS[dim] || dim;
+  drawBreakdown();
+}
+
+function drawBreakdown() {
+  const all = EXPLORE.rows;
+  const rows = all.slice(0, CHART_ROWS);
+  const host = $("#breakdown");
+  if (!rows.length) { host.innerHTML = `<p class="empty">Nothing recorded.</p>`; $("#brows").innerHTML = ""; return; }
+
+  /* Horizontal bars: the labels are long ("The Dive Centre (Sandy Beach)") and
+     the question is a ranking, so bars run left-to-right and read down. */
+  /* Label width and truncation follow the text scale together. Growing the
+     labels without widening the gutter they sit in is how a phone gets a row
+     of names running off the left-hand side of the chart. */
+  const ts = textScale(), FS = (12 * ts).toFixed(1);
+  const W = 1100, ROW = 26 * ts, GAP = 2, L = Math.min(430, 330 * ts), R = 60, T = 6;
+  const CUT = Math.max(14, Math.round(46 / ts));
+  const H = T + rows.length * ROW + 10;
+  const max = Math.max(...rows.map(r => r.dives));
+  const bw = W - L - R;
+
+  const bars = rows.map((r, i) => {
+    const y = T + i * ROW, h = ROW - GAP;
+    const w = Math.max(2, (r.dives / max) * bw);
+    const rad = Math.min(4, w / 2, h / 2);
+    const label = r.label.length > CUT ? r.label.slice(0, CUT - 1) + "…" : r.label;
+    const path = `M${L},${y} L${L + w - rad},${y} Q${L + w},${y} ${L + w},${y + rad} `
+               + `L${L + w},${y + h - rad} Q${L + w},${y + h} ${L + w - rad},${y + h} L${L},${y + h} Z`;
+    return `<g class="brow" data-v="${r.label.replace(/"/g, "&quot;")}" style="cursor:pointer">
+      <rect x="0" y="${y}" width="${W}" height="${h}" fill="transparent"/>
+      <text x="${L - 10}" y="${y + h / 2 + 4 * ts}" text-anchor="end" font-size="${FS}"
+            fill="var(--ink-muted)">${label}</text>
+      <path d="${path}" fill="var(--series)"/>
+      <text x="${L + w + 8}" y="${y + h / 2 + 4 * ts}" font-size="${FS}" font-weight="600"
+            fill="var(--ink)">${r.dives}</text></g>`;
+  }).join("");
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="${LABELS[EXPLORE.dim]} by number of dives, top ${rows.length} of ${all.length}"
+      >${bars}</svg>`
+    + (all.length > rows.length
+        ? `<p style="margin:6px 0 2px;font-size:12px;color:var(--ink-faint)">
+             showing top ${rows.length} of ${all.length} — full list below</p>` : "");
+
+  host.querySelectorAll(".brow").forEach(g => {
+    const r = all.find(x => x.label === g.dataset.v);
+    scrub(g, e => showTip(
+      `<b>${r.label}</b><br>${r.dives} dives<br>`
+      + `${Math.round((r.total_seconds || 0) / 3600)} h underwater<br>`
+      + `deepest ${r.max_depth} m · average ${r.avg_depth} m<br>`
+      + `${r.first_dive} → ${r.last_dive}`, e), hideTip);
+    g.addEventListener("click", () => selectValue(r.label));
+  });
+
+  $("#brows").innerHTML = all.map(r => `<tr data-v="${r.label.replace(/"/g, "&quot;")}">
+    <td>${r.label}</td>
+    <td class="num">${r.dives}</td>
+    <td class="num">${Math.round((r.total_seconds || 0) / 3600)}</td>
+    <td class="num c2">${r.max_depth ?? "—"}</td>
+    <td class="num c2">${r.avg_depth ?? "—"}</td>
+    <td class="c3">${r.first_dive ?? "—"}</td>
+    <td class="c2">${r.last_dive ?? "—"}</td></tr>`).join("");
+  $("#brows").querySelectorAll("tr").forEach(tr =>
+    tr.addEventListener("click", () => selectValue(tr.dataset.v)));
+}
+
+async function selectValue(value) {
+  const ids = await (await fetch(
+    `/api/dimension/${EXPLORE.dim}/dives?value=${encodeURIComponent(value)}`)).json();
+  state.ids = new Set(ids);
+  const button = $("#clearsel");
+  button.hidden = false;
+  button.classList.add("on");
+  button.textContent = `${LABELS[EXPLORE.dim]}: ${value}  ✕`;
+  apply();
+  $("#rows").closest("section").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function clearSelection() {
+  state.ids = null;
+  const button = $("#clearsel");
+  button.hidden = true;
+  button.classList.remove("on");
+  apply();
+}
+
+/* ---------------------------------------------------------- logging a dive */
+async function openNewDive() {
+  const panel = $("#newdive");
+  panel.hidden = !panel.hidden;
+  if (panel.hidden) return;
+  $("#nd_err").textContent = "";
+  const sites = await entityList("site");
+  $("#nd_site").innerHTML = `<option value="">site…</option>`
+    + sites.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  /* default to today, because a dive is usually logged the day it happened */
+  if (!$("#nd_date").value) $("#nd_date").value = new Date().toISOString().slice(0, 10);
+}
+
+async function saveNewDive() {
+  const date = $("#nd_date").value, time = $("#nd_time").value || "09:00";
+  if (!date) { $("#nd_err").textContent = "a dive needs a date"; return; }
+  /* the most recent dive is the one you were just on, so it is what to copy */
+  const previous = DIVES.length
+    ? DIVES.reduce((a, b) => (a.started_local > b.started_local ? a : b)) : null;
+  const body = {
+    started_local: `${date} ${time}:00`,
+    duration_seconds: $("#nd_dur").value ? Number($("#nd_dur").value) * 60 : null,
+    max_depth_m: $("#nd_depth").value ? Number($("#nd_depth").value) : null,
+    site_id: $("#nd_site").value ? Number($("#nd_site").value) : null,
+    supply_mode: $("#nd_supply").value || null,
+    copy_from: ($("#nd_copy").checked && previous) ? previous.id : null,
+  };
+  try {
+    const dive = await post("/api/edit/dive/create", body);
+    $("#newdive").hidden = true;
+    $("#nd_dur").value = ""; $("#nd_depth").value = "";
+    DIVES = await (await fetch("/api/dives")).json();
+    apply();
+    await refreshStats();
+    await openDive(dive.id);
+    showError(`dive ${dive.dive_number} logged`);
+  } catch (e) { $("#nd_err").textContent = e.message; }
+}
+
+/* The values a field is allowed to take, straight from the database's own
+   whitelist. Both editors build their dropdowns from this and the writer
+   refuses anything outside it, so there is one authority rather than a copy
+   here and another in the server. A supply mode typed as "Open Circuit" was
+   accepted, matched by nothing, and became its own category in Explore. */
+const choicesFor = field => {
+  const spec = specFor(field);
+  if (!spec || !spec.choices) return null;
+  try { return JSON.parse(spec.choices); } catch (e) { return null; }
+};
+
+/* -------------------------------------------------------------- bulk edit */
+const PICKED = new Set();
+/* Fields worth setting across several dives at once. Deliberately excludes the
+   summary telemetry: a bulk edit is for "these five dives were off the same
+   boat", not for rewriting recorded figures wholesale. */
+/* Where the field name does not read well on its own. */
+const BULK_LABELS = { weight_lb: "weight (lb)", current_surface: "current (surface)",
+                      current_bottom: "current (bottom)", sea_state: "sea state" };
+const BULK_FIELDS = ["site_id", "trip_id", "vessel_id", "country_id", "city_id",
+                     "suit", "supply_mode", "rating", "visibility",
+                     "current_surface", "current_bottom", "sea_state", "weather",
+                     "weight_lb"];
+
+function renderBulkBar() {
+  const bar = $("#bulkbar");
+  bar.hidden = !WRITABLE || PICKED.size === 0;
+  $("#bulkcount").textContent = `${PICKED.size} dive${PICKED.size === 1 ? "" : "s"} selected`;
+  if ($("#bulkaction").value === "merge") bulkMergeMode();
+  const all = $("#selall");
+  if (all) all.checked = VIEW.length > 0 && VIEW.every(d => PICKED.has(d.id));
+}
+
+async function bulkModeChanged() {
+  const mode = $("#bulkaction").value;
+  if (mode === "merge") return bulkMergeMode();
+  $("#bulkprimary").hidden = true;
+  const isField = mode === "field";
+  $("#bulkfield").hidden = !isField;
+  $("#bulkkind").hidden = isField;
+  $("#bulktarget").hidden = isField;
+  $("#bulkrole").hidden = true;
+  if (isField) await bulkFieldChanged(); else await bulkKindChanged();
+}
+
+async function bulkFieldChanged() {
+  const field = $("#bulkfield").value;
+  const kind = REF_ENTITY[field];
+  const choices = choicesFor(field);
+  const fromList = !!kind || !!choices;
+  $("#bulkvalueref").hidden = !fromList;
+  $("#bulkvalue").hidden = fromList;
+  if (kind) {
+    const list = await entityList(kind);
+    $("#bulkvalueref").innerHTML = list.map(i =>
+      `<option value="${i.id}">${esc(i.name)}</option>`).join("");
+  } else if (choices) {
+    $("#bulkvalueref").innerHTML = choices.map(v =>
+      `<option value="${v}">${esc(choiceLabel(field, v))}</option>`).join("");
+  }
+}
+
+async function bulkKindChanged() {
+  const kind = $("#bulkkind").value;
+  $("#bulkvalue").hidden = true;
+  $("#bulkvalueref").hidden = true;
+  const list = await entityList(kind);
+  $("#bulktarget").innerHTML = list.map(i =>
+    `<option value="${i.id}">${esc(i.name)}</option>`).join("");
+  const roles = kind === "person" ? EDITABLE.person_roles
+              : kind === "organisation" ? EDITABLE.organisation_roles : null;
+  $("#bulkrole").hidden = !roles;
+  if (roles) $("#bulkrole").innerHTML = roles.map(r =>
+    `<option value="${r.code}">${r.label}</option>`).join("");
+}
+
+/* Merging several logged dives back into the one dive they really were.
+   A computer ends a dive at the surface, so training or testing kit arrives as
+   two or three records of a single episode. */
+function pickedDives() {
+  return DIVES.filter(d => PICKED.has(d.id))
+              .sort((a, b) => (a.started_local || "").localeCompare(b.started_local || ""));
+}
+
+function bulkMergeMode() {
+  for (const id of ["#bulkfield", "#bulkvalue", "#bulkvalueref", "#bulkkind",
+                    "#bulktarget", "#bulkrole"]) $(id).hidden = true;
+  const chosen = pickedDives();
+  $("#bulkprimary").hidden = chosen.length < 2;
+  $("#bulkprimary").innerHTML = chosen.map((d, i) =>
+    `<option value="${d.id}" ${i === 0 ? "selected" : ""}>context from dive ${
+      d.dive_number ?? d.id} · ${(d.started_local || "").slice(0, 16)}</option>`).join("");
+}
+
+const hhmm = s => `${Math.floor(s / 60)} min`;
+
+async function bulkMerge(ids) {
+  const primary = Number($("#bulkprimary").value);
+  if (!primary) { $("#bulkerr").textContent = "choose which dive supplies the details"; return; }
+
+  /* Work the whole thing out first and show it. A merge hides dives, so he
+     sees the real numbers before anything is written, not after. */
+  let plan;
+  try {
+    plan = await post("/api/edit/merge",
+                      { dive_ids: ids, primary_dive_id: primary, preview: true });
+  } catch (e) {
+    if (!/apart/.test(e.message)) throw e;
+    if (!confirm(e.message + "\n\nMerge them anyway?")) return;
+    plan = await post("/api/edit/merge",
+                      { dive_ids: ids, primary_dive_id: primary, preview: true, force: true });
+  }
+
+  const parts = plan.parts.map(p => `  dive ${p.dive_number ?? p.dive_id} · ${
+    (p.started_local || "").slice(11, 16)} · ${hhmm(p.submerged_seconds)}`).join("\n");
+  const blanks = Object.entries(plan.blanks || {})
+    .map(([f, why]) => `  ${f}: left blank — ${why}`).join("\n");
+  const message =
+    `Merge these ${plan.parts.length} dives into one?\n\n${parts}\n\n`
+    + `dive time   ${hhmm(plan.span_seconds)}  (first descent to final surfacing)\n`
+    + `underwater  ${hhmm(plan.submerged_seconds)}  (what gas figures use)\n`
+    + `on surface  ${hhmm(plan.gap_seconds)}\n\n`
+    + (blanks ? blanks + "\n\n" : "")
+    + "The originals are hidden, not deleted — every sample and cylinder is "
+    + "kept, and Unmerge puts them back.";
+  if (!confirm(message)) return;
+
+  const r = await post("/api/edit/merge", {
+    dive_ids: ids, primary_dive_id: primary, force: true,
+    reason: prompt("Why were these one dive? (optional)") || null,
+  });
+  PICKED.clear();
+  return `merged into dive ${r.dive_number ?? r.id}`;
+}
+
+async function bulkApply() {
+  const ids = [...PICKED];
+  if (!ids.length) return;
+  $("#bulkerr").textContent = "";
+  try {
+    if ($("#bulkaction").value === "merge") {
+      if (ids.length < 2) { $("#bulkerr").textContent = "select at least two dives to merge"; return; }
+      const said = await bulkMerge(ids);
+      if (said === undefined) return;          // he backed out; nothing written
+      $("#bulkerr").textContent = said;
+      renderBulkBar();
+    } else if ($("#bulkaction").value === "field") {
+      const field = $("#bulkfield").value;
+      const ref = REF_ENTITY[field];
+      const fromList = ref || choicesFor(field);
+      const raw = fromList ? $("#bulkvalueref").value : $("#bulkvalue").value;
+      if (raw === "") { $("#bulkerr").textContent = "give it a value"; return; }
+      const spec = specFor(field);
+      const value = (ref || spec?.kind === "number") ? Number(raw) : raw;
+      if (!confirm(`Set ${field} on ${ids.length} dives?\n\n`
+          + "Dives that already have a different value are skipped, never overwritten."))
+        return;
+      const r = await post("/api/edit/bulk/field", { dive_ids: ids, field, value });
+      const c = r.counts;
+      let message = `${c.filled} filled, ${c.already_matching} already the same`;
+      if (c.skipped) {
+        message += `, ${c.skipped} skipped (already set differently)`;
+        alert(`${message}\n\nSkipped dives kept their existing value:\n`
+          + r.skipped.slice(0, 10).map(s =>
+              `  dive ${s.id}: ${s.current ?? s.reason}`).join("\n"));
+      }
+      $("#bulkerr").textContent = message;
+    } else {
+      const kind = $("#bulkkind").value;
+      const target = Number($("#bulktarget").value);
+      const roleEl = $("#bulkrole");
+      if (!confirm(`Add this ${kind.replace("_", " ")} to ${ids.length} dives?`)) return;
+      const r = await post("/api/edit/bulk/link", { dive_ids: ids, kind,
+        target_id: target, role: roleEl.hidden ? null : roleEl.value });
+      $("#bulkerr").textContent = `linked on ${r.counts.linked} dives`;
+    }
+    DIVES = await (await fetch("/api/dives")).json();
+    apply();
+    await refreshStats();
+    if (DETAIL) await reloadDive();
+  } catch (e) { $("#bulkerr").textContent = e.message; }
+}
+
+/* ------------------------------------------------------------------ table */
+function apply() {
+  const q = state.q.toLowerCase();
+  VIEW = DIVES.filter(d => {
+    if (state.ids && !state.ids.has(d.id)) return false;
+    if (state.country && d.country !== state.country) return false;
+    if (state.year && !(d.started_local || "").startsWith(state.year)) return false;
+    if (state.deco && !d.is_deco) return false;
+    if (state.trimix && !(d.mix_he_percent > 0)) return false;
+    if (q) {
+      /* The improvements are searched so "SPG" finds every dive he meant to
+         do something about one. */
+      const hay = [d.site, d.country, d.trip, d.computer_normalised, d.issues]
+        .join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  VIEW.sort((a, b) => {
+    const x = a[sortKey], y = b[sortKey];
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return (x > y ? 1 : x < y ? -1 : 0) * sortDir;
+  });
+  draw();
+}
+
+function draw() {
+  $("#count").textContent = `${VIEW.length} of ${DIVES.length} dives`;
+  if (!VIEW.length) { $("#rows").innerHTML = `<tr><td colspan="10" class="empty">No dives match.</td></tr>`; renderBulkBar(); return; }
+  $("#rows").innerHTML = VIEW.map(d => `<tr data-id="${d.id}" class="${d.id === SEL ? "sel" : ""}">
+    <td class="selcol"><input type="checkbox" data-pick="${d.id}" ${PICKED.has(d.id) ? "checked" : ""}></td>
+    <td>${(d.started_local || "").slice(0, 10)}</td>
+    <td class="num c3">${d.dive_number ?? ""}</td>
+    <td>${d.site || "—"} ${d.is_deco ? '<span class="pill">deco</span>' : ""}</td>
+    <td class="c2">${d.country || "—"}</td>
+    <td class="num">${d.max_depth_m != null ? d.max_depth_m.toFixed(1) : "—"}</td>
+    <td class="num">${d.duration_seconds ? Math.round(d.duration_seconds / 60) : "—"}</td>
+    <td class="num c2">${d.water_temp_c ?? "—"}</td>
+    <td class="num c3">${gasOf(d)}</td>
+    <td class="c2">${d.computer_normalised || "—"}</td></tr>`).join("");
+  $("#rows").querySelectorAll("tr[data-id]").forEach(tr =>
+    tr.addEventListener("click", () => openDive(+tr.dataset.id)));
+  $("#rows").querySelectorAll("input[data-pick]").forEach(box =>
+    box.addEventListener("click", e => {
+      e.stopPropagation();               /* picking is not opening */
+      const id = Number(box.dataset.pick);
+      box.checked ? PICKED.add(id) : PICKED.delete(id);
+      renderBulkBar();
+    }));
+}
+
+/* ------------------------------------------------------------------- boot */
+/* ------------------------------------------------------- kit and people lists
+
+   Two registers over one piece of machinery: a row per item, cells that edit
+   in place, and a write that goes through /api/edit/field like every other
+   correction -- so a change made here is logged, reversible, and replayed on
+   top of the next import rather than lost to it.
+
+   editField() above is bound to the open dive. These are lists rather than one
+   open record, so they carry their own smaller editor instead of bending it. */
+
+let KIT = [], PEOPLE = [], kitTab = "active";
+/* Which kit item is open beneath its row, if any: every field that does not
+   fit in a column, and its photographs. Under the row rather than a page of
+   its own, because the point of them is to sit beside the serial number. */
+let KIT_OPEN = null;
+/* The item just ticked retired, while its date and reason are on offer. */
+let KIT_RETIRING = null;
+
+const fmtDay = s => s ? String(s).slice(0, 10) : "—";
+
+async function loadKit() {
+  KIT = await (await fetch("/api/kit")).json();
+  renderKit();
+}
+
+async function loadPeople() {
+  PEOPLE = await (await fetch("/api/people")).json();
+  renderPeople();
+}
+
+/* Which register an entity's cells live in: how to redraw it after a write,
+   and where to say a write was refused. One table rather than a ternary per
+   register -- the ternary was fine for two and wrong for the third. */
+const REGISTERS = {
+  equipment: { load: () => loadKit(),    written: () => registerWritten("equipment"),
+               err: "#kiterr" },
+  person:    { load: () => loadPeople(), written: () => registerWritten("person"),
+               err: "#peopleerr" },
+  /* A site's write reaches beyond its register -- see siteWritten(). */
+  site:      { load: () => loadSites(), written: () => siteWritten(), err: "#siteserr" },
+};
+/* After a write to a kit item or a person. The dive page's picker caches its
+   list, the open dive's chips carry the name, and a breakdown row asks for its
+   dives by it -- a renamed item's old row would click through to none. Only
+   the open dive's links are redrawn: notes half written on it stay put. */
+async function registerWritten(entity) {
+  delete ENTITY_CACHE[entity];
+  await REGISTERS[entity].load();
+  await loadExplore(EXPLORE.dim);
+  if (!DETAIL) return;
+  DETAIL = await (await fetch("/api/dive/" + DETAIL.id)).json();
+  await renderLinks();
+}
+const refreshList = entity => REGISTERS[entity].load();
+const listError = (entity, message) => {
+  const box = $(REGISTERS[entity].err);
+  box.textContent = message || "";
+  if (message) setTimeout(() => { box.textContent = ""; }, 6000);
+};
+
+/* A cell that becomes an input when clicked. A field the database does not
+   list as editable is rendered as plain text and cannot be clicked at all --
+   the same rule the dive page follows, from the same whitelist. */
+function ecell(entity, id, field, value, placeholder = "—", label = null, cls = "") {
+  /* `label` is what to show when it is not the value itself: a country is
+     stored as an id and read as a name, a vocabulary code as words. */
+  const text = label ?? value;
+  /* Read-only takes the same route a non-whitelisted field does: plain text.
+     A register cell that opens an input and then answers 403 is worse on a
+     phone than one that never looked clickable. */
+  if (!WRITABLE || !specFor(field, entity))
+    return `<td${cls ? ` class="${cls}"` : ""}>${esc(text ?? placeholder)}</td>`;
+  const shown = (text ?? "") === ""
+    ? `<span class="faint">${placeholder}</span>` : esc(text);
+  return `<td class="ecell${cls ? " " + cls : ""}" data-entity="${entity}" data-id="${id}"
+    data-field="${field}" data-value="${esc(value ?? "")}">${shown}</td>`;
+}
+
+/* What a reference field in a register picks from. */
+const REGISTER_REFS = { country_id: "country" };
+
+async function ecellEdit(td) {
+  if (!WRITABLE || td.dataset.editing) return;
+  td.dataset.editing = "1";
+  const { entity, id, field } = td.dataset;
+  const before = td.dataset.value || "";
+  const spec = specFor(field, entity) || {};
+  /* A field with a fixed vocabulary, or one that points at another record,
+     is picked rather than typed: a typed "Wreck" is not the "wreck" a filter
+     looks for, and nobody knows a country's id. */
+  const choices = spec.choices ? JSON.parse(spec.choices)
+    : REGISTER_REFS[field] ? (await entityList(REGISTER_REFS[field]))
+                               .map(r => [String(r.id), r.name])
+    : null;
+  let input;
+  if (choices) {
+    input = document.createElement("select");
+    input.innerHTML = `<option value="">—</option>` + choices.map(c => {
+      const [v, label] = Array.isArray(c) ? c : [String(c), String(c).replace(/_/g, " ")];
+      return `<option value="${esc(v)}">${esc(label)}</option>`;
+    }).join("");
+  } else if (field === "notes") {
+    input = document.createElement("textarea");
+  } else {
+    input = document.createElement("input");
+    input.type = spec.kind === "date" ? "date" : "text";
+  }
+  input.value = before;
+  /* What the control made of it: a one-line box drops line breaks and a
+     textarea respells them, and neither is an edit. */
+  const start = input.value.trim();
+  td.textContent = "";
+  td.appendChild(input);
+  input.focus();
+  if (input.select) input.select();
+
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    const typed = input.value.trim();
+    /* A date half typed reads back as empty, and must not clear the date. */
+    if (commit && input.validity && input.validity.badInput) {
+      listError(entity, "That date is incomplete — nothing was changed.");
+      await refreshList(entity);
+      return;
+    }
+    if (!commit || typed === start) { await refreshList(entity); return; }
+    /* Empty means "no value", not the empty string -- the writer treats null
+       as clearing the correction rather than storing a blank. A number field
+       is sent as a number: a cell hands back a string, and "18" stored as
+       text sorts after "120". Something that will not parse is sent as typed,
+       so the writer can say what is wrong with it. */
+    let value = typed === "" ? null : typed;
+    if (value !== null && (spec.kind === "number" || spec.kind === "ref")
+        && Number.isFinite(Number(value))) value = Number(value);
+    try {
+      await post("/api/edit/field", { entity, id: Number(id), field, value });
+    } catch (e) { listError(entity, e.message); await refreshList(entity); return; }
+    await (REGISTERS[entity].written || REGISTERS[entity].load)();
+  };
+  if (choices) input.addEventListener("change", () => input.blur());
+  input.addEventListener("blur", () => finish(true));
+  input.addEventListener("keydown", (e) => {
+    /* In a notes box Enter is a new line; with ⌘ or Ctrl it saves. */
+    if (e.key === "Enter" && (field !== "notes" || choices || e.metaKey || e.ctrlKey)) {
+      e.preventDefault(); input.blur();
+    }
+    if (e.key === "Escape") { done = true; refreshList(entity); }
+  });
+}
+
+/* The columns. Retired adds when and why, which is what that list is for -- and
+   on a phone they take the place of the maker and the count, which are a tap
+   away with everything else. */
+const kitAside = () => kitTab === "retired" ? " c3" : "";
+/* A tick that cannot be unticked says nothing on a list of ticked items. */
+const kitTickAside = () => WRITABLE ? "" : kitAside();
+function kitHead() {
+  return `<th>Item</th><th class="${kitAside().trim()}">Maker</th><th class="c2">Serial</th>
+    <th class="num${kitAside()}">Dives</th><th class="c3">Last used</th><th class="c2">Sets</th>
+    <th class="num c3">Photos</th>${kitTab === "retired"
+      ? "<th>Retired on</th><th>Reason</th>" : ""}<th class="ticked${kitTickAside()}">Retired</th><th></th>`;
+}
+const kitColumns = () => kitTab === "retired" ? 11 : 9;
+
+function renderKit() {
+  const q = ($("#kitq").value || "").trim().toLowerCase();
+  const inService = KIT.filter(k => !k.inactive).length;
+  const rows = KIT.filter(k =>
+    (kitTab === "all" || (kitTab === "retired" ? k.inactive : !k.inactive))
+    && (!q || `${k.display_name} ${k.manufacturer || ""} ${k.serial || ""} ${
+                k.shop || ""} ${k.retired_reason || ""} ${k.notes || ""}`
+                .toLowerCase().includes(q)));
+  $("#kitcount").textContent =
+    `${rows.length} shown — ${inService} in service, ${KIT.length - inService} retired`;
+  $("#kithead").innerHTML = kitHead();
+  $("#kitrows").innerHTML = rows.length ? rows.map(k => `<tr>
+      ${ecell("equipment", k.id, "display_name", k.display_name, "—", null, "fold kname")}
+      ${ecell("equipment", k.id, "manufacturer", k.manufacturer, "—", null, "fold" + kitAside())}
+      ${ecell("equipment", k.id, "serial", k.serial || null, "—", null, "c2")}
+      <td class="num${kitAside()}">${k.dives}</td>
+      <td class="c3">${fmtDay(k.last_dive)}</td>
+      <td class="c2 fold sets">${esc(k.sets || "")}</td>
+      <td class="num c3">${k.photos
+        ? `<button data-photos="${k.id}">${k.photos}</button>`
+        : `<span class="faint">—</span>`}</td>
+      ${kitTab === "retired"
+        ? ecell("equipment", k.id, "retired_on", k.retired_on, "—", null, "day")
+          + ecell("equipment", k.id, "retired_reason", k.retired_reason, "—", null, "fold")
+        : ""}
+      <td class="ticked${kitTickAside()}">${WRITABLE
+        ? `<input type="checkbox" data-retire="${k.id}"${k.inactive ? " checked" : ""}
+             aria-label="retired">`
+        : k.inactive ? "yes" : ""}</td>
+      <td><button data-kitopen="${k.id}">${KIT_OPEN === k.id ? "Close" : "Details"}</button></td>
+    </tr>`
+    + (KIT_OPEN === k.id
+        ? `<tr class="photorow"><td colspan="${kitColumns()}" id="kitopen"></td></tr>` : "")).join("")
+    : `<tr><td colspan="${kitColumns()}" class="empty">nothing matches</td></tr>`;
+  if (KIT_OPEN !== null) renderKitOpen();
+}
+
+/* Everything on record about the item: label, field, and what to show where
+   that is not the value itself. A field the database does not offer for
+   editing would draw as plain text here, as everywhere. The item, its maker
+   and its serial are cells in the row above, but a phone hides some of those. */
+const KIT_FIELDS = [
+  ["Item",          "display_name"],
+  ["Maker",         "manufacturer"],
+  ["Serial",        "serial"],
+  ["Purchased",     "purchased_on"],
+  ["Shop",          "shop"],
+  ["Price",         "price"],
+  ["Warranty",      "warranty"],
+  ["Last service",  "last_service"],
+  ["Next service",  "next_service"],
+  ["O2 service",    "o2_service"],
+  ["Weight (lb)",   "weight_lb", v => v == null ? null : lb(v)],
+  ["Retired on",    "retired_on"],
+  ["Why retired",   "retired_reason"],
+  ["Notes",         "notes"],
+];
+
+function renderKitOpen() {
+  const host = $("#kitopen");
+  const k = KIT.find(x => x.id === KIT_OPEN);
+  if (!host || !k) return;
+  const fixed = (label, value) => `<tr><th>${label}</th><td>${esc(value ?? "—")}</td></tr>`;
+  host.innerHTML = `<table class="siteform"><tbody>
+      ${KIT_FIELDS.map(([label, field, show]) => {
+        const value = k[field] === "" ? null : k[field];
+        return `<tr><th>${label}</th>${ecell("equipment", k.id, field, value, "—",
+          show ? show(value) : null, field === "notes" ? "pre" : "")}</tr>`;
+      }).join("")}
+      ${fixed("Dives", k.dives)}
+      ${fixed("Last used", fmtDay(k.last_dive))}
+      ${fixed("Sets", k.sets)}
+      ${fixed("Item number", `#${k.id}`)}
+    </tbody></table><div id="kitphotos"></div>`;
+  renderKitPhotos();
+}
+
+function renderKitPhotos() {
+  const host = $("#kitphotos");
+  if (!host) return;
+  const items = (MEDIA || []).filter(p => p.kit.some(k => k.id === KIT_OPEN));
+  const item = KIT_OPEN;
+  host.innerHTML = photoStrip("equipment", item, items);
+  wirePhotoStrip(host, "equipment", item, items,
+                 async () => { await mediaLibrary(); await loadKit(); });
+}
+
+async function kitOpen(id) {
+  KIT_OPEN = KIT_OPEN === id ? null : id;
+  /* Fetched on demand: nobody opening the kit register wants the whole
+     library pulled down for a column of counts. */
+  if (KIT_OPEN !== null) {
+    try { await mediaLibrary(); } catch (e) { listError("equipment", e.message); }
+  }
+  renderKit();
+}
+
+/* The tick. The item moves lists at once and its date and reason are offered
+   there and then -- above the table, because the row itself has just left it.
+   No date is filled in: today is when the box was ticked, not when the item
+   was sold. Unticking says nothing about either, so both are kept. */
+async function kitRetire(id, retired) {
+  try {
+    await post("/api/edit/field", { entity: "equipment", id, field: "inactive",
+                                    value: retired ? 1 : 0 });
+  } catch (e) {
+    listError("equipment", e.message);
+    await loadKit();                    /* the tick goes back to the truth */
+    return;
+  }
+  if (retired) KIT_RETIRING = id;
+  else if (KIT_RETIRING === id) KIT_RETIRING = null;
+  await registerWritten("equipment");
+  renderKitRetire();
+}
+
+function renderKitRetire() {
+  const k = KIT.find(x => x.id === KIT_RETIRING);
+  $("#kitretire").innerHTML = !WRITABLE || !k ? "" : `<div class="hidden-note">
+      <b>${esc(k.display_name)}</b>${k.manufacturer ? ` (${esc(k.manufacturer)})` : ""}
+      is now under Retired. When and why, if you want to say:
+      <div class="addrow">
+        <label for="kitretiredon">Retired on</label>
+        <input type="date" required id="kitretiredon" data-retiring="retired_on"
+               value="${esc(k.retired_on ?? "")}">
+        <input data-retiring="retired_reason" placeholder="reason"
+               value="${esc(k.retired_reason ?? "")}">
+        <button data-retiringdone="1">Done</button></div></div>`;
+}
+
+/* Saved as each box is left, like a cell -- so ticking the next item, or
+   leaving the tab, cannot lose what was typed for this one. The panel is not
+   redrawn: that would take the box the Owner has just tabbed into. */
+async function kitRetiring(input) {
+  const field = input.dataset.retiring;
+  const k = KIT.find(x => x.id === KIT_RETIRING);
+  if (!k) return;
+  if (input.validity && input.validity.badInput) {
+    listError("equipment", "That date is incomplete — it was not saved.");
+    return;
+  }
+  const value = (input.value || "").trim() || null;
+  if (unchangedEdit(k[field], value)) return;
+  try {
+    await post("/api/edit/field", { entity: "equipment", id: k.id, field, value });
+  } catch (e) { listError("equipment", e.message); return; }
+  await registerWritten("equipment");
+}
+
+/* A new item from the register itself. */
+const KIT_NEW = [["display_name", "new item"], ["manufacturer", "maker"],
+                 ["serial", "serial"], ["notes", "notes"]];
+
+function renderKitAdd() {
+  $("#kitadd").innerHTML = !WRITABLE ? "" : `<div class="addrow">${
+    KIT_NEW.map(([field, hint]) =>
+      `<input data-kitnew="${field}" placeholder="${hint}" aria-label="${hint}">`).join("")
+    }<button data-kitadd="1">Add item</button></div>`;
+}
+
+async function kitAdd() {
+  const inputs = KIT_NEW.map(([field]) => [field, $(`input[data-kitnew="${field}"]`)]);
+  const fields = {};
+  for (const [field, input] of inputs) fields[field] = (input.value || "").trim();
+  if (!fields.display_name) { listError("equipment", "Give the new item a name."); return; }
+  let made;
+  try {
+    made = await post("/api/edit/entity", { kind: "equipment", fields });
+  } catch (e) { listError("equipment", e.message); return; }
+  await registerWritten("equipment");
+  const item = KIT.find(k => k.id === made.id);
+  if (!made.created) {
+    /* What was typed is kept: the serial and notes were not saved anywhere. */
+    listError("equipment", `That item and maker are already in your kit${
+      item && item.inactive ? ", under Retired" : ""} — nothing was added.`);
+    return;
+  }
+  for (const [, input] of inputs) input.value = "";
+  /* Show it: on the list it is on, past any search, open. */
+  $("#kitq").value = "";
+  kitShow("active");
+  if (KIT_OPEN !== made.id) await kitOpen(made.id);
+}
+
+function kitShow(tab) {
+  kitTab = tab;
+  document.querySelectorAll("button[data-kit]")
+    .forEach(b => b.classList.toggle("on", b.dataset.kit === tab));
+  renderKit();
+}
+
+function renderPeople() {
+  const q = ($("#peopleq").value || "").trim().toLowerCase();
+  const rows = PEOPLE.filter(p => !q
+    || `${p.display_name} ${p.phone || ""} ${p.email || ""} ${p.notes || ""}`
+         .toLowerCase().includes(q));
+  $("#peoplecount").textContent = `${rows.length} of ${PEOPLE.length}`;
+  $("#peoplerows").innerHTML = rows.length ? rows.map(p => `<tr>
+      ${ecell("person", p.id, "display_name", p.display_name)}
+      <td class="num">${p.dives}</td>
+      <td>${fmtDay(p.last_dive)}</td>
+      ${ecell("person", p.id, "phone", p.phone, "")}
+      ${ecell("person", p.id, "email", p.email, "")}
+      ${ecell("person", p.id, "notes", p.notes, "")}
+    </tr>`).join("")
+    : `<tr><td colspan="6" class="empty">nothing matches</td></tr>`;
+}
+
+/* ------------------------------------------------------------- sites
+
+   The third register, and the one whose edits reach furthest: a dive holds a
+   site's id, not its name, so a rename here is a rename on every dive there.
+   That is also why the importer had to learn to find a site by what DiveLogDT
+   called it rather than by what it is called now -- see import_sites. */
+let SITES = [], sitesTab = "live";
+/* Which site is open beneath its row. Same shape as the kit photographs: the
+   detail is one site's worth, and it belongs next to the row it describes. */
+let SITE_OPEN = null;
+
+async function loadSites() {
+  SITES = await (await fetch("/api/sites")).json();
+  renderSites();
+}
+
+/* After any write to a site. The picker on the dive page caches its list, the
+   dive table shows site names, and the "sites" tile counts them -- all three
+   can be stale after a rename, a merge or a hide. */
+async function siteWritten() {
+  delete ENTITY_CACHE.site;
+  await loadSites();
+  DIVES = await (await fetch("/api/dives")).json();
+  apply();
+  if (DETAIL) await reloadDive();
+  else await refreshStats();
+}
+
+const words = v => v == null || v === "" ? null : String(v).replace(/_/g, " ");
+const metres = v => v == null ? null : `${Number(v).toFixed(Number(v) % 1 ? 1 : 0)} m`;
+function depthRange(s) {
+  if (s.depth_min_m == null && s.depth_max_m == null) return "—";
+  if (s.depth_min_m == null) return `to ${metres(s.depth_max_m)}`;
+  if (s.depth_max_m == null) return `from ${metres(s.depth_min_m)}`;
+  return `${s.depth_min_m}–${metres(s.depth_max_m)}`;
+}
+
+/* Degrees and decimal minutes, the way a chart, a GPS and a boat skipper say
+   it: N25 49.123 E056 21.456. The decimal figure is what is stored. */
+function degMin(value, pos, neg, width) {
+  if (value == null) return "";
+  const a = Math.abs(value), d = Math.floor(a);
+  const m = ((a - d) * 60).toFixed(3).padStart(6, "0");
+  return `${value < 0 ? neg : pos}${String(d).padStart(width, "0")} ${m}`;
+}
+function position(s) {
+  if (s.latitude == null || s.longitude == null) return "";
+  return `${degMin(s.latitude, "N", "S", 2)} ${degMin(s.longitude, "E", "W", 3)}`;
+}
+
+function renderSites() {
+  const q = ($("#sitesq").value || "").trim().toLowerCase();
+  const live = SITES.filter(s => !s.hidden_at).length;
+  const rows = SITES.filter(s =>
+    (sitesTab === "all" || (sitesTab === "hidden" ? s.hidden_at : !s.hidden_at))
+    && (!q || `${s.name} ${s.country || ""} ${s.site_type || ""} ${s.notes || ""}
+               ${s.launch_point || ""}`.toLowerCase().includes(q)));
+  $("#sitescount").textContent =
+    `${rows.length} shown — ${live} in use, ${SITES.length - live} hidden`;
+  $("#siterows").innerHTML = rows.length ? rows.map(s => `<tr${
+      s.hidden_at ? ` class="hiddensite"` : ""}>
+      ${ecell("site", s.id, "name", s.name)}
+      <td class="c3">${esc(s.country || "—")}</td>
+      <td class="c2">${esc(words(s.site_type) || "—")}</td>
+      <td class="c2">${esc(words(s.access) || "—")}</td>
+      <td class="c2">${esc(words(s.difficulty) || "—")}</td>
+      <td class="num c3">${esc(depthRange(s))}</td>
+      <td class="num">${s.dives}</td>
+      <td class="c2">${fmtDay(s.first_dive)}</td>
+      <td class="c3">${fmtDay(s.last_dive)}</td>
+      <td class="num c2">${s.deepest_m != null ? esc(metres(s.deepest_m)) : "—"}</td>
+      <td class="num c3">${s.photos || `<span class="faint">—</span>`}</td>
+      <td><button data-site="${s.id}">${SITE_OPEN === s.id ? "Close" : "Details"}</button></td>
+    </tr>`
+    + (SITE_OPEN === s.id ? `<tr class="photorow"><td colspan="12" id="siteopen"></td></tr>`
+                          : "")).join("")
+    : `<tr><td colspan="12" class="empty">nothing matches</td></tr>`;
+  if (SITE_OPEN !== null) renderSiteOpen();
+}
+
+function renderSiteOpen() {
+  const host = $("#siteopen");
+  const s = SITES.find(x => x.id === SITE_OPEN);
+  if (!host || !s) return;
+  const row = (label, field, value, shown) =>
+    `<tr><th>${label}</th>${ecell("site", s.id, field, value, "—", shown)}</tr>`;
+  const fixed = (label, value) => `<tr><th>${label}</th><td>${esc(value ?? "—")}</td></tr>`;
+  const where = position(s);
+  const map = where
+    ? ` <a href="https://maps.apple.com/?ll=${s.latitude},${s.longitude}&q=${
+        encodeURIComponent(s.name)}" target="_blank" rel="noopener">open in Maps</a>` : "";
+  let status = "";
+  if (s.merged_into) status = `<p class="hidden-note">Merged into
+      <b>${esc(s.merged_into_name || "site " + s.merged_into)}</b> on ${fmtDay(s.hidden_at)}.
+      Its dives are there now. Restoring it splits it back out and returns them.</p>`;
+  else if (s.hidden_at) status = `<p class="hidden-note">Hidden on ${fmtDay(s.hidden_at)}${
+      s.hidden_reason ? ` — ${esc(s.hidden_reason)}` : ""}.</p>`;
+  const others = SITES.filter(x => !x.hidden_at && x.id !== s.id);
+  const actions = !WRITABLE ? "" : s.hidden_at
+    ? `<div class="addrow"><button data-siterestore="${s.id}">${
+        s.merged_into ? "Restore — undo the merge" : "Restore"}</button></div>`
+    : `<div class="addrow">
+        <select data-mergeinto="${s.id}"><option value="">— merge into… —</option>${
+          others.map(x => `<option value="${x.id}">${esc(x.name)}${
+            x.country ? ` (${esc(x.country)})` : ""} · ${x.dives} dives</option>`).join("")}
+        </select>
+        <button class="danger" data-sitemerge="${s.id}">Merge</button>
+        ${s.dives ? "" : `<button class="danger" data-sitehide="${s.id}">Hide</button>`}
+      </div>`;
+  host.innerHTML = status + `<table class="siteform"><tbody>
+      ${row("Name", "name", s.name)}
+      ${row("Country", "country_id", s.country_id, s.country)}
+      ${row("Latitude", "latitude", s.latitude)}
+      ${row("Longitude", "longitude", s.longitude)}
+      ${fixed("Position", where ? where : null).replace("</td>", `${map}</td>`)}
+      ${row("Type", "site_type", s.site_type, words(s.site_type))}
+      ${row("Access", "access", s.access, words(s.access))}
+      ${row("Dived from", "launch_point", s.launch_point)}
+      ${row("Level", "difficulty", s.difficulty, words(s.difficulty))}
+      ${row("Typical depth from (m)", "depth_min_m", s.depth_min_m)}
+      ${row("Typical depth to (m)", "depth_max_m", s.depth_max_m)}
+      ${row("Currents", "currents", s.currents, words(s.currents))}
+      ${row("Typical visibility (m)", "visibility_m", s.visibility_m)}
+      ${row("Best season", "best_season", s.best_season)}
+      ${row("Hazards", "hazards", s.hazards)}
+      ${row("Notes", "notes", s.notes)}
+      ${fixed("Dives here", s.dives)}
+      ${fixed("First / last", `${fmtDay(s.first_dive)} / ${fmtDay(s.last_dive)}`)}
+      ${fixed("Your deepest here", s.deepest_m != null ? metres(s.deepest_m) : null)}
+      ${fixed("Max depth (DiveLogDT)", s.source_max_depth_m != null
+                ? metres(s.source_max_depth_m) : null)}
+      ${s.source_name && s.source_name !== s.name
+        ? fixed("DiveLogDT calls it", s.source_name) : ""}
+    </tbody></table><div id="sitephotos"></div>` + actions;
+  const strip = $("#sitephotos");
+  const items = (MEDIA || []).filter(p => (p.sites || []).some(x => x.id === s.id));
+  strip.innerHTML = photoStrip("site", s.id, items);
+  wirePhotoStrip(strip, "site", s.id, items,
+                 async () => { await mediaLibrary(); await loadSites(); });
+}
+
+async function siteAction(path, body, question) {
+  if (question && !confirm(question)) return;
+  try {
+    await post(path, body);
+  } catch (e) { listError("site", e.message); return; }
+  await siteWritten();
+}
+
+function wireSites() {
+  $("#sitesq").addEventListener("input", renderSites);
+  $("#sitesq").closest(".filters").addEventListener("click", (ev) => {
+    const tab = ev.target.closest("button[data-sites]");
+    if (!tab) return;
+    sitesTab = tab.dataset.sites;
+    tab.parentElement.querySelectorAll("button[data-sites]")
+       .forEach(b => b.classList.toggle("on", b === tab));
+    renderSites();
+  });
+  $("#siterows").addEventListener("click", async (ev) => {
+    const open = ev.target.closest("button[data-site]");
+    if (open) {
+      const id = Number(open.dataset.site);
+      SITE_OPEN = SITE_OPEN === id ? null : id;
+      /* The library is fetched for the photo strip only when a site is
+         opened, as the kit register does. */
+      if (SITE_OPEN !== null) {
+        try { await mediaLibrary(); } catch (e) { listError("site", e.message); }
+      }
+      renderSites();
+      return;
+    }
+    const merge = ev.target.closest("button[data-sitemerge]");
+    if (merge) {
+      const id = Number(merge.dataset.sitemerge);
+      const into = Number(($(`select[data-mergeinto="${id}"]`) || {}).value);
+      const from = SITES.find(x => x.id === id), to = SITES.find(x => x.id === into);
+      if (!to) { listError("site", "Pick the site to merge this one into."); return; }
+      await siteAction("/api/edit/site/merge", { site_id: id, into_id: into },
+        `Merge "${from.name}" into "${to.name}"?\n\n`
+        + `Its ${from.dives} dive${from.dives === 1 ? "" : "s"} move to "${to.name}" `
+        + `and "${from.name}" is hidden. Nothing is deleted; Restore undoes it.`);
+      return;
+    }
+    const hide = ev.target.closest("button[data-sitehide]");
+    if (hide) {
+      const reason = prompt("Why is this site coming off the list?\n\n"
+        + "It is hidden, not deleted, and can be restored.", "");
+      if (reason === null) return;
+      await siteAction("/api/edit/site/hide",
+        { site_id: Number(hide.dataset.sitehide), reason: reason || null });
+      return;
+    }
+    const restore = ev.target.closest("button[data-siterestore]");
+    if (restore) {
+      await siteAction("/api/edit/site/restore",
+        { site_id: Number(restore.dataset.siterestore) });
+      return;
+    }
+    const td = ev.target.closest("td.ecell");
+    if (td) ecellEdit(td);
+  });
+}
+
+function wireRegisters() {
+  $("#kitq").addEventListener("input", renderKit);
+  $("#peopleq").addEventListener("input", renderPeople);
+  wireSites();
+
+  renderKitAdd();
+  $("#kitq").closest(".filters").addEventListener("click", (ev) => {
+    const tab = ev.target.closest("button[data-kit]");
+    if (tab) kitShow(tab.dataset.kit);
+  });
+
+  $("#kitadd").addEventListener("click", (ev) => {
+    if (ev.target.closest("button[data-kitadd]")) return kitAdd();
+  });
+  $("#kitadd").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && ev.target.closest("input[data-kitnew]")) return kitAdd();
+  });
+
+  $("#kitretire").addEventListener("focusout", (ev) => {
+    const input = ev.target.closest("input[data-retiring]");
+    if (input) return kitRetiring(input);
+  });
+  $("#kitretire").addEventListener("click", (ev) => {
+    if (!ev.target.closest("button[data-retiringdone]")) return;
+    KIT_RETIRING = null;
+    renderKitRetire();
+  });
+
+  $("#kitrows").addEventListener("change", (ev) => {
+    const tick = ev.target.closest("input[data-retire]");
+    if (tick) return kitRetire(Number(tick.dataset.retire), tick.checked);
+  });
+  $("#kitrows").addEventListener("click", async (ev) => {
+    const open = ev.target.closest("button[data-kitopen]");
+    if (open) { await kitOpen(Number(open.dataset.kitopen)); return; }
+    const photos = ev.target.closest("button[data-photos]");
+    if (photos) { await kitOpen(Number(photos.dataset.photos)); return; }
+    const td = ev.target.closest("td.ecell");
+    if (td) ecellEdit(td);
+  });
+
+  $("#peoplerows").addEventListener("click", (ev) => {
+    const td = ev.target.closest("td.ecell");
+    if (td) ecellEdit(td);
+  });
+}
+
+/* ------------------------------------------------------------------ gas use
+
+   One dot per dive, and the line is the median. Nothing here computes a rate:
+   every figure comes from /api/sac, which runs the same `gas_report` code the
+   dive page uses, so a dot and that dive's own SAC can never disagree.
+
+   Dives are spaced evenly rather than by date. A week in Sodwana would
+   otherwise pile fifteen dives onto one pixel and leave the rest of the year
+   empty, and the question here is how the rate is moving, not when the trips
+   were.
+
+   The chart draws no rate it was not given. A rebreather dive, a sidemount
+   dive where the cylinder count is uncertain, and a cylinder with no size or
+   start pressure are absent -- and the note under the chart says how many and
+   why, because a missing dot is a missing measurement, not a missing dive. */
+
+let SAC = null;
+
+async function loadSac() {
+  SAC = await (await fetch("/api/sac")).json();
+  const years = SAC.years.map(y => y.year);
+  $("#sacyear").innerHTML =
+    `<option value="all">All years</option>`
+    + years.slice().reverse().map(y => `<option value="${y}">${y}</option>`).join("");
+  $("#sacyear").value = years.length ? years[years.length - 1] : "all";
+  renderSac();
+}
+
+function sacPoints() {
+  const pick = $("#sacyear").value;
+  return pick === "all" ? SAC.points : SAC.points.filter(p => p.year === pick);
+}
+
+function renderSac() {
+  if (!SAC) return;
+  const pick = $("#sacyear").value;
+  const points = sacPoints();
+  const stat = pick === "all"
+    ? SAC.all
+    : (SAC.years.find(y => y.year === pick) || { n: 0 });
+
+  $("#sacmedian").textContent = stat.median != null ? stat.median.toFixed(1) : "—";
+  $("#sacmean").textContent = stat.mean != null ? stat.mean.toFixed(1) : "—";
+  $("#sacbest").textContent = stat.best != null ? stat.best.toFixed(1) : "—";
+  $("#sacworst").textContent = stat.worst != null ? stat.worst.toFixed(1) : "—";
+  $("#saccount").textContent = stat.n
+    ? `${stat.n} dive${stat.n === 1 ? "" : "s"} with a measured rate`
+    : "no measured rates";
+
+  const withheld = Object.entries(SAC.withheld || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, n]) => `${n} ${esc(reason)}`);
+  $("#sacnote").textContent = withheld.length
+    ? "Cylinders with no rate, across the whole logbook: " + withheld.join("; ")
+      + ". A dive is on the chart only when its gas was actually measured."
+    : "";
+
+  sacChart(points, pick);
+}
+
+function sacChart(points, pick) {
+  const host = $("#sacchart");
+  if (!points.length) {
+    host.innerHTML = `<p class="empty">no measured rates for this year</p>`;
+    return;
+  }
+
+  const ts = textScale(), FS = (11 * ts).toFixed(1);
+  const W = 1100, L = 46 * ts, R = 16, T = 14 * ts, B = 34 * ts, mh = 300;
+  const iw = W - L - R, H = T + mh + B;
+  /* The axis is fixed across every view, not fitted to the year on screen.
+     Comparing years is the whole reason the picker exists, and an axis that
+     rescales when you change it makes a good year and a bad one draw the same
+     picture. Zero-based for the same reason: a cut-off axis would turn a
+     decade of real improvement into noise. */
+  const top = Math.max(5, Math.ceil(
+    Math.max(...SAC.points.map(p => p.sac_l_per_min)) / 5) * 5);
+  const n = points.length;
+  const x = i => n === 1 ? L + iw / 2 : L + (i + 0.5) * (iw / n);
+  const y = v => T + (1 - v / top) * mh;
+
+  let grid = "";
+  const step = top > 40 ? 10 : 5;
+  for (let v = 0; v <= top; v += step) {
+    grid += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"`
+          + ` stroke="var(--rule)" stroke-width="1"/>`
+          + `<text x="${L - 8}" y="${y(v) + 4 * ts}" text-anchor="end" font-size="${FS}"`
+          + ` fill="var(--ink-faint)">${v}</text>`;
+  }
+
+  /* The median line is the point of the chart, so it is the one accented
+     thing on it -- the same rule the profile chart follows for max depth. */
+  let medianMark = "", labels = "";
+  if (pick === "all") {
+    /* A step per year: where the rate settled, year by year. */
+    let at = 0;
+    for (const year of SAC.years) {
+      const count = points.filter(p => p.year === year.year).length;
+      if (!count || year.median == null) { at += count; continue; }
+      const x1 = x(at) - (iw / n) / 2, x2 = x(at + count - 1) + (iw / n) / 2;
+      medianMark += `<line x1="${x1}" x2="${x2}" y1="${y(year.median)}"`
+                  + ` y2="${y(year.median)}" stroke="var(--accent-mark)"`
+                  + ` stroke-width="2"/>`;
+      if (at) {
+        labels += `<line x1="${x1}" x2="${x1}" y1="${T}" y2="${T + mh}"`
+                + ` stroke="var(--rule)" stroke-width="1" opacity=".7"/>`;
+      }
+      labels += `<text x="${(x1 + x2) / 2}" y="${H - 10}" text-anchor="middle"`
+              + ` font-size="${FS}" fill="var(--ink-faint)">${year.year}</text>`;
+      at += count;
+    }
+  } else {
+    const stat = SAC.years.find(yr => yr.year === pick);
+    if (stat && stat.median != null) {
+      medianMark = `<line x1="${L}" x2="${W - R}" y1="${y(stat.median)}"`
+                 + ` y2="${y(stat.median)}" stroke="var(--accent-mark)"`
+                 + ` stroke-width="2"/>`
+                 + `<text x="${W - R}" y="${y(stat.median) - 7}" text-anchor="end"`
+                 + ` font-size="${FS}" fill="var(--accent-text)">median `
+                 + `${stat.median.toFixed(1)}</text>`;
+    }
+    /* About six dates along the bottom, so the eye can place a cluster in the
+       year without the axis pretending to be a calendar. */
+    /* Fewer dates when they are drawn bigger, or they run into each other. */
+    const every = Math.max(1, Math.round(n / Math.max(2, Math.round(6 / ts))));
+    points.forEach((p, i) => {
+      if (i % every) return;
+      labels += `<text x="${x(i)}" y="${H - 10}" text-anchor="middle" font-size="${FS}"`
+              + ` fill="var(--ink-faint)">${esc(fmtDay(p.started_local))}</text>`;
+    });
+  }
+
+  /* Mark size and treatment follow density. A ring in the surface colour keeps
+     neighbouring dives apart while there is room for one; past about two
+     hundred dives the dots are closer together than a ring is wide, so the
+     ring would be most of the mark and the row would read as one bar. There
+     they go part-transparent instead, and the depth of tone carries how many
+     dives are stacked. */
+  const dense = n > 200;
+  const r = dense ? 2.4 : n > 80 ? 3.2 : 4;
+  const skin = dense
+    ? ` fill-opacity=".55"`
+    : ` stroke="var(--surface-sunk)" stroke-width="1.5"`;
+  const dots = points.map((p, i) =>
+    `<circle cx="${x(i)}" cy="${y(p.sac_l_per_min)}" r="${r}" fill="var(--series)"`
+    + `${skin}/>`).join("");
+
+  const summary = `${n} dives, median `
+    + `${(pick === "all" ? SAC.all.median : (SAC.years.find(yr => yr.year === pick) || {}).median)}`
+    + ` litres per minute`;
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" id="sacsvg" role="img"
+      aria-label="${esc(summary)}">
+      ${grid}${labels}${medianMark}
+      <line id="saccross" x1="0" x2="0" y1="${T}" y2="${T + mh}"
+            stroke="var(--ink-faint)" stroke-width="1" opacity="0"/>
+      ${dots}
+      <circle id="sacdot" r="${r + 2.5}" fill="none" stroke="var(--accent-mark)"
+              stroke-width="2" opacity="0"/>
+      <text x="${L - 8}" y="${T - 2}" text-anchor="end" font-size="${FS}"
+            fill="var(--ink-faint)">L/min</text>
+    </svg>`;
+
+  const svg = $("#sacsvg"), cross = $("#saccross"), dot = $("#sacdot");
+  const read = ev => {
+    const box = svg.getBoundingClientRect();
+    const px = (ev.clientX - box.left) / box.width * W;
+    let best = 0;
+    for (let i = 1; i < n; i++) {
+      if (Math.abs(x(i) - px) < Math.abs(x(best) - px)) best = i;
+    }
+    const p = points[best];
+    cross.setAttribute("x1", x(best)); cross.setAttribute("x2", x(best));
+    cross.setAttribute("opacity", ".45");
+    dot.setAttribute("cx", x(best)); dot.setAttribute("cy", y(p.sac_l_per_min));
+    dot.setAttribute("opacity", "1");
+    showTip(`<b>${p.sac_l_per_min.toFixed(1)} L/min</b><br>`
+      + `dive ${p.dive_number} &middot; ${esc(fmtDay(p.started_local))}`
+      + (p.site ? `<br>${esc(p.site)}` : "")
+      + (p.max_depth_m != null ? `<br>${p.max_depth_m.toFixed(1)} m` : "")
+      + (p.minutes != null ? ` &middot; ${p.minutes} min` : ""), ev);
+  };
+  scrub(svg, read, () => {
+    hideTip();
+    cross.setAttribute("opacity", "0");
+    dot.setAttribute("opacity", "0");
+  });
+}
+
+/* --------------------------------------------------------------- importing
+
+   Upload is deliberately not how this works. A browser will not give a server
+   a file path -- it hands over a basename and withholds the rest -- so the
+   alternatives were to copy the whole export through the request body or to
+   have the server find the file itself. The second is less machinery and it
+   is also better: it can say how many dives are in each file and whether that
+   one has been imported already, which a file chooser cannot.
+
+   Nothing is ever ticked for you. A computer records equipment checks, factory
+   self-tests and whatever anyone else did while borrowing it, and which of
+   those belong in a logbook is not a decision this page gets to make. A
+   pre-ticked list is a one-click import wearing a costume. */
+
+let IMPORT = null;
+
+const impError = m => {
+  $("#imperr").textContent = m || "";
+  if (m) setTimeout(() => { $("#imperr").textContent = ""; }, 8000);
+};
+
+const kb = n => n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.round(n / 1e3) + " kB";
+
+/* Whether to look inside subfolders is a view preference, not a fact about
+   the logbook, so it lives in the browser rather than costing the database a
+   column. The folders themselves are the opposite -- a real decision the Owner
+   made, kept in the database where it survives a different browser. */
+const impDeep = () => localStorage.getItem("impdeep") !== "0";
+
+function impFolders(folders, truncated) {
+  $("#impfolders").innerHTML = folders.map(f => `<li>
+      <span class="path">${esc(f.path)}</span>
+      ${f.fixed
+        ? `<span class="why">beside your logbook</span>`
+        : `<button data-folder="${esc(f.path)}" title="Stop searching this folder">✕</button>`}
+    </li>`).join("");
+  $("#impfoldercount").textContent =
+    `${folders.length} folder${folders.length === 1 ? "" : "s"} searched`
+    + (truncated ? " — too much to read, narrow it down" : "");
+}
+
+async function impScan() {
+  const button = $("#impscan");
+  button.disabled = true;
+  button.textContent = "Looking…";
+  try {
+    const result = await (await fetch(
+      `/api/import/sources?deep=${impDeep() ? 1 : 0}`)).json();
+    const found = result.exports;
+    impFolders(result.folders, result.truncated);
+    /* The same export is often in two places at once -- copied beside the
+       logbook and still sitting in the inbox. They are two real files, so both
+       are offered, and the folder is what tells them apart. */
+    $("#impsource").innerHTML = found.length
+      ? found.map(f => `<option value="${f.token}">${esc(f.name)} — `
+          + `${esc(f.format || "")} ${f.dives} dive${f.dives === 1 ? "" : "s"}, `
+          + `${kb(f.bytes)}, in ${esc(f.folder.split("/").pop())}`
+          + `${f.imported_at ? ", imported " + f.imported_at.slice(0, 10) : ""}`
+          + `</option>`).join("")
+      : `<option value="">— no exports found —</option>`;
+    $("#impwhere").textContent = found.length
+      ? `${found.length} export${found.length === 1 ? "" : "s"} found. `
+        + `An export already imported is still worth re-running: it enriches dives you already have.`
+      : "Nothing found. Add the folder your exports are in, or tick subfolders.";
+  } catch (e) { impError(e.message); }
+  button.disabled = false;
+  button.textContent = "Look for exports";
+}
+
+async function impFolderAdd() {
+  const box = $("#impfolderpath");
+  const path = box.value.trim();
+  if (!path) { impError("type the folder's path first"); return; }
+  try {
+    await post("/api/import/folders/add", { path });
+    box.value = "";
+    await impScan();
+  } catch (e) { impError(e.message); }
+}
+
+async function impFolderRemove(path) {
+  try {
+    await post("/api/import/folders/remove", { path });
+    await impScan();
+  } catch (e) { impError(e.message); }
+}
+
+async function impAnalyse() {
+  const source = $("#impsource").value;
+  if (!source) { impError("choose an export first"); return; }
+  const button = $("#impanalyse");
+  button.disabled = true;
+  button.textContent = "Reading…";
+  $("#impresult").innerHTML = "";
+  try {
+    IMPORT = await post("/api/import/analyse", { source });
+    renderAnalysis();
+  } catch (e) { impError(e.message); }
+  button.disabled = false;
+  button.textContent = "See what is in it";
+}
+
+const GROUPS = [
+  ["likely", "Look like real dives",
+   "Shown so you can judge them. Tick only the ones you dived."],
+  ["unlikely", "Probably not dives",
+   "Shallow or short enough to be equipment checks, pool sessions or accidental starts."],
+  ["factory", "Almost certainly factory self-test records",
+   "Each is the first record on its computer with the next dive years later. They read "
+   + "as deep decompression dives but nobody dived them — a Shearwater ships with one stored."],
+];
+
+function renderAnalysis() {
+  $("#impreport").innerHTML = `<pre class="notes">${esc(IMPORT.text)}</pre>`;
+  const blocks = GROUPS.map(([key, title, note]) => {
+    const rows = IMPORT.new[key] || [];
+    if (!rows.length) return "";
+    return `<h3>${title} (${rows.length})</h3><p class="sub">${note}</p>
+      <div class="tablewrap scroll"><table>
+        <thead><tr><th></th><th>Start</th><th class="num">Max depth</th>
+          <th class="num">Duration</th><th>Computer</th></tr></thead>
+        <tbody>${rows.map(d => `<tr>
+          <td><input type="checkbox" class="imppick" value="${esc(d.dive_id)}"></td>
+          <td>${esc((d.started_local || "").slice(0, 16))}</td>
+          <td class="num">${d.max_depth_m == null ? "—" : d.max_depth_m.toFixed(1) + " m"}</td>
+          <td class="num">${Math.floor((d.duration_seconds || 0) / 60)} min</td>
+          <td>${esc((d.serials || []).join(", ")) || "—"}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>`;
+  }).join("");
+  $("#impnew").innerHTML = blocks
+    || `<p class="sub">Every dive in this export is already in your logbook.
+        Importing it again will still fill in anything the computer knows and
+        your log does not.</p>`;
+  $("#impgo").hidden = false;
+  impPicked();
+}
+
+function impPicked() {
+  const n = document.querySelectorAll(".imppick:checked").length;
+  $("#imppicked").textContent = n
+    ? `${n} dive${n === 1 ? "" : "s"} ticked`
+    : "nothing ticked — this will enrich the dives you already have and add none";
+}
+
+async function impCommit() {
+  const add = [...document.querySelectorAll(".imppick:checked")].map(b => b.value);
+  const name = $("#impsource").options[$("#impsource").selectedIndex].text;
+  if (!confirm(add.length
+      ? `Import ${add.length} dive${add.length === 1 ? "" : "s"} from ${name}?`
+      : `Import nothing new from ${name}?\n\nDives you already have will be `
+        + `enriched from the computer's record. No dive will be added.`)) return;
+
+  const button = $("#impcommit");
+  button.disabled = true;
+  button.textContent = "Importing…";      /* the snapshot runs before the first byte comes back */
+  try {
+    const r = await post("/api/import/commit",
+      { source: $("#impsource").value, add });
+    $("#impresult").innerHTML = `<h3>Done</h3>
+      <pre class="notes">${esc(r.text)}</pre>
+      ${r.added.length ? `<pre class="notes">${esc(r.added.join("\n"))}</pre>` : ""}
+      <p class="sub">Backed up first to ${esc(r.snapshot)}</p>`;
+    /* The log has changed underneath the page. */
+    DIVES = await (await fetch("/api/dives")).json();
+    apply();
+    await refreshStats();
+    IMPORT = null;
+    $("#impnew").innerHTML = "";
+    $("#impgo").hidden = true;
+  } catch (e) { impError(e.message); }
+  button.disabled = false;
+  button.textContent = "Import the ticked dives";
+}
+
+/* ------------------------------------------------------------ photographs
+
+   They arrive the way dive exports do: dropped in a folder the server already
+   searches, found by a scan, and taken into the library only when ticked.
+   There is no upload endpoint and deliberately will not be one -- a browser
+   will not hand a server a path, a request body here is capped at a megabyte,
+   and the folder list the importer already keeps is the Owner's answer to
+   "where are my files" already given once.
+
+   Nothing on this page ever names a file. A thumbnail is /thumb/<row id> and
+   the full-size photograph is /media/<row id>; the server turns the id into a
+   path and refuses anything that is not a number. */
+let MEDIA = null, MSCAN = null, mediaTab = "all";
+
+const photoWhen = p => p.taken_at ? p.taken_at.slice(0, 16) : "date unknown";
+/* Said in words wherever a date is shown. A date off the filesystem is the one
+   that quietly files a photograph against the wrong dive. */
+const photoWhy = p => p.taken_source === "exif" ? "the camera's own date"
+  : p.taken_source === "filesystem" ? "the file's date — not the camera's"
+  : "no date recorded anywhere";
+const photoLabel = p => p.caption || p.original_name || `photo ${p.id}`;
+
+/* The library, fetched once and kept. The dive page and the kit register both
+   want it to offer a picker, and neither is worth a fetch of its own. */
+async function mediaLibrary(force) {
+  if (MEDIA === null || force) MEDIA = await (await fetch("/api/media")).json();
+  return MEDIA;
+}
+
+/* A strip of thumbnails, and -- only where a write could actually succeed --
+   a picker that attaches another and a ✕ that takes one off. Read-only builds
+   neither, rather than building them and letting them answer 403. */
+function photoStrip(kind, targetId, items) {
+  const thumbs = (items || []).map(p => `<figure>
+      <a href="/media/${p.id}" target="_blank" rel="noopener"
+         title="${esc(photoLabel(p))} — ${esc(photoWhy(p))}">
+        <img src="/thumb/${p.id}" loading="lazy" alt="${esc(photoLabel(p))}"></a>
+      <figcaption><span class="${p.taken_source === "exif" ? "" : "guessed"}"
+        >${esc(photoWhen(p))}</span>${WRITABLE
+          ? ` <button data-detach="${p.id}" title="Take this photo off">✕</button>` : ""}
+      </figcaption></figure>`).join("");
+  const picker = WRITABLE ? `<div class="addrow">
+      <select data-pick="1"><option value="">— add a photo —</option></select>
+      <button data-attach="1">Attach</button></div>` : "";
+  if (!thumbs && !picker) return "";
+  return `<div class="strip">${thumbs}</div>${picker}`;
+}
+
+/* Filled a moment after the strip is drawn, from the library. Deliberately
+   separate: the strip itself comes out of the payload the page already has,
+   so a dive's photographs are on screen without waiting for anything. */
+async function fillPhotoPicker(host, already) {
+  const select = host.querySelector("select[data-pick]");
+  if (!select) return;
+  const taken = new Set((already || []).map(p => p.id));
+  const library = await mediaLibrary();
+  select.innerHTML = `<option value="">— add a photo —</option>`
+    + library.filter(p => !taken.has(p.id))
+        .map(p => `<option value="${p.id}">${esc(photoWhen(p))} — ${esc(photoLabel(p))}</option>`)
+        .join("");
+}
+
+function wirePhotoStrip(host, kind, targetId, items, after) {
+  host.querySelectorAll("button[data-detach]").forEach(b =>
+    b.addEventListener("click", async () => {
+      try {
+        await post("/api/media/detach",
+          { attachment_id: +b.dataset.detach, kind, target_id: targetId });
+        MEDIA = null;
+        await after();
+      } catch (e) { showError(e.message); }
+    }));
+  const add = host.querySelector("button[data-attach]");
+  if (add) add.addEventListener("click", async () => {
+    const select = host.querySelector("select[data-pick]");
+    if (!select || !select.value) return;
+    try {
+      await post("/api/media/attach",
+        { attachment_id: +select.value, kind, target_id: targetId });
+      MEDIA = null;
+      await after();
+    } catch (e) { showError(e.message); }
+  });
+  if (WRITABLE) fillPhotoPicker(host, items);
+}
+
+function renderDivePhotos() {
+  const host = $("#dphotos");
+  const items = DETAIL.attachments || [];
+  host.innerHTML = photoStrip("dive", DETAIL.id, items);
+  wirePhotoStrip(host, "dive", DETAIL.id, items, reloadDive);
+}
+
+/* ---- the Media view: a contact sheet over the whole library ------------- */
+
+const MEDIA_TABS = {
+  all: () => true,
+  dive: p => p.dives.length > 0,
+  kit: p => p.kit.length > 0,
+  loose: p => !p.dives.length && !p.kit.length && !(p.sites || []).length,
+};
+
+function photoTile(p) {
+  const places = p.dives.map(d => `dive ${d.dive_number ?? d.id}`)
+    .concat(p.kit.map(k => k.name), (p.sites || []).map(x => x.name));
+  return `<div class="photo">
+    <a href="/media/${p.id}" target="_blank" rel="noopener">
+      <img src="/thumb/${p.id}" loading="lazy" alt="${esc(photoLabel(p))}"></a>
+    <div class="pmeta">
+      <b>${esc(photoLabel(p))}</b>
+      <span class="${p.taken_source === "exif" ? "" : "guessed"}"
+            title="${esc(photoWhy(p))}">${esc(photoWhen(p))}</span>
+      <div>${places.length ? esc(places.join(", ")) : "not filed against anything"}</div>
+      ${WRITABLE ? `<div class="addrow">
+        <button data-caption="${p.id}">Caption</button>
+        <button class="danger" data-remove="${p.id}">Remove</button></div>` : ""}
+    </div></div>`;
+}
+
+function renderMedia() {
+  const q = ($("#mediaq").value || "").trim().toLowerCase();
+  const rows = (MEDIA || []).filter(MEDIA_TABS[mediaTab]).filter(p => !q
+    || `${photoLabel(p)} ${p.dives.map(d => `${d.dive_number} ${d.site || ""}`).join(" ")} `
+       .concat(p.kit.map(k => k.name).join(" ")).toLowerCase().includes(q));
+  const filed = (MEDIA || []).filter(p => p.dives.length || p.kit.length).length;
+  $("#mediacount").textContent = MEDIA && MEDIA.length
+    ? `${rows.length} shown — ${MEDIA.length} in the library, ${filed} filed`
+    : "";
+  $("#mediagrid").innerHTML = rows.length ? rows.map(photoTile).join("")
+    : `<p class="empty">${MEDIA && MEDIA.length ? "nothing matches"
+        : "no photographs yet — look for some above"}</p>`;
+}
+
+async function loadMedia(force) {
+  try { await mediaLibrary(force); } catch (e) { $("#mediaerr").textContent = e.message; }
+  renderMedia();
+}
+
+async function removePhoto(id) {
+  const reason = prompt("Why is this photo coming off the log?\n\n"
+    + "The file stays on disk — this hides it, the way hiding a dive does.", "");
+  if (reason === null) return;
+  try {
+    await post("/api/media/remove", { attachment_id: id, reason: reason || null });
+    await loadMedia(true);
+  } catch (e) { $("#mediaerr").textContent = e.message; }
+}
+
+async function captionPhoto(id) {
+  const now = (MEDIA || []).find(p => p.id === id);
+  const value = prompt("What is this a photograph of?", (now && now.caption) || "");
+  if (value === null) return;
+  try {
+    await post("/api/edit/field",
+      { entity: "attachment", id, field: "caption", value: value.trim() || null });
+    await loadMedia(true);
+  } catch (e) { $("#mediaerr").textContent = e.message; }
+}
+
+/* ---- finding photographs that are not in the library yet ---------------- */
+
+async function mediaScan() {
+  const button = $("#mscan");
+  button.disabled = true;
+  button.textContent = "Looking…";
+  $("#mserr").textContent = "";
+  try {
+    MSCAN = await (await fetch(`/api/media/sources?deep=${impDeep() ? 1 : 0}`)).json();
+    renderMediaScan();
+  } catch (e) { $("#mserr").textContent = e.message; }
+  button.disabled = false;
+  button.textContent = "Look for photos";
+}
+
+function renderMediaScan() {
+  const fresh = MSCAN.photos.filter(p => !p.known);
+  const known = MSCAN.photos.length - fresh.length;
+  $("#mscount").textContent =
+    `${fresh.length} new, ${known} already in the library`
+    + (MSCAN.truncated ? " — too much to read, narrow the folders down" : "")
+    + (MSCAN.limited ? ` — stopped after ${MSCAN.limit} files` : "");
+  $("#msfound").innerHTML = fresh.length ? `<div class="tablewrap scroll"><table>
+      <thead><tr><th></th><th>Photo</th><th>Taken</th><th>Where the date came from</th>
+        <th>Dive it falls inside</th><th>Folder</th></tr></thead>
+      <tbody>${fresh.map(p => `<tr>
+        <td><input type="checkbox" class="mspick" value="${p.token}"
+             data-dive="${p.dive ? p.dive.id : ""}"></td>
+        <td>${esc(p.name)}</td>
+        <td class="${p.taken_source === "exif" ? "" : "guessed"}">${esc(photoWhen(p))}</td>
+        <td class="${p.taken_source === "exif" ? "" : "guessed"}">${esc(photoWhy(p))}</td>
+        <td>${p.dive
+              ? `dive ${p.dive.dive_number ?? p.dive.id}${p.dive.site
+                  ? " — " + esc(p.dive.site) : ""}`
+              : `<span class="faint">none</span>`}</td>
+        <td>${esc(p.folder.split("/").pop())}</td>
+      </tr>`).join("")}</tbody></table></div>
+      <p class="sub">A dive is <b>offered</b>, never applied: a camera left on a
+        boat photographs the boat. Untick the dive by unticking the photo, or
+        take the photo in now and file it from the dive page.</p>`
+    : `<p class="sub">Nothing new found in those folders.</p>`;
+  $("#msgo").hidden = !fresh.length;
+  msPicked();
+}
+
+function msPicked() {
+  const n = document.querySelectorAll(".mspick:checked").length;
+  $("#mspicked").textContent = n ? `${n} ticked` : "nothing ticked";
+}
+
+async function mediaCommit() {
+  const add = [...document.querySelectorAll(".mspick:checked")].map(b => ({
+    token: b.value, dive_id: b.dataset.dive ? +b.dataset.dive : null }));
+  if (!add.length) { $("#mserr").textContent = "tick a photo first"; return; }
+  const button = $("#mscommit");
+  button.disabled = true;
+  button.textContent = "Adding…";
+  try {
+    const r = await post("/api/media/ingest", { add });
+    $("#msresult").innerHTML = `<p class="sub">${r.added.length} added`
+      + (r.already_here.length ? `, ${r.already_here.length} were already here`
+                                 + ` (the same photograph twice is one photograph)` : "")
+      + `.</p>`;
+    MSCAN.photos.forEach(p => { if (add.some(a => a.token === p.token)) p.known = true; });
+    renderMediaScan();
+    await loadMedia(true);
+    if (DETAIL) await reloadDive();
+  } catch (e) { $("#mserr").textContent = e.message; }
+  button.disabled = false;
+  button.textContent = "Add the ticked photos";
+}
+
+function wireMedia() {
+  $("#mscan").addEventListener("click", mediaScan);
+  $("#mscommit").addEventListener("click", mediaCommit);
+  $("#mediaq").addEventListener("input", renderMedia);
+  $("#msfound").addEventListener("change", ev => {
+    if (ev.target.classList.contains("mspick")) msPicked();
+  });
+  $("#mediaq").closest(".filters").addEventListener("click", ev => {
+    const tab = ev.target.closest("button[data-media]");
+    if (!tab) return;
+    mediaTab = tab.dataset.media;
+    document.querySelectorAll("button[data-media]").forEach(b =>
+      b.classList.toggle("on", b === tab));
+    renderMedia();
+  });
+  $("#mediagrid").addEventListener("click", ev => {
+    const remove = ev.target.closest("button[data-remove]");
+    if (remove) { removePhoto(+remove.dataset.remove); return; }
+    const caption = ev.target.closest("button[data-caption]");
+    if (caption) captionPhoto(+caption.dataset.caption);
+  });
+}
+
+/* Which top-level view is showing. Each is loaded when it is opened rather
+   than on every page load -- nobody needs 227 kit items fetched to look at a
+   dive. */
+const VIEW_LOADED = {};
+
+function showView(name) {
+  document.querySelectorAll("[data-view]").forEach(el => {
+    el.classList.toggle("viewoff", el.dataset.view !== name);
+  });
+  document.querySelectorAll("#views button").forEach(b => {
+    b.classList.toggle("on", b.dataset.show === name);
+  });
+  if (!VIEW_LOADED[name]) {
+    VIEW_LOADED[name] = true;
+    if (name === "sac") loadSac();
+    if (name === "import") impScan();
+    if (name === "media") loadMedia();
+  }
+  /* Outside the once-only guard: an edit made since it was last opened must
+     show. It is cheap, and a history panel that is quietly behind is worse
+     than no history panel. */
+  if (name === "history") loadHistory();
+  /* The registers the same, and for the same reason: a dive counts towards
+     every item, person and place on it, so almost any write on the dive page
+     moves one of them. They used to load once per page, and two cylinders
+     added on a dive were not on the Kit tab until the page was reloaded. */
+  if (name === "kit") loadKit();
+  if (name === "people") loadPeople();
+  if (name === "sites") loadSites();
+  scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function wireViews() {
+  $("#views").addEventListener("click", (ev) => {
+    const button = ev.target.closest("button[data-show]");
+    if (button) showView(button.dataset.show);
+  });
+  showView("log");
+}
+
+function wireImport() {
+  $("#impscan").addEventListener("click", impScan);
+  $("#impanalyse").addEventListener("click", impAnalyse);
+  $("#impcommit").addEventListener("click", impCommit);
+  $("#sacyear").addEventListener("change", renderSac);
+  $("#impfolderadd").addEventListener("click", impFolderAdd);
+  $("#impfolderpath").addEventListener("keydown", ev => {
+    if (ev.key === "Enter") impFolderAdd();
+  });
+  $("#impfolders").addEventListener("click", ev => {
+    const button = ev.target.closest("button[data-folder]");
+    if (button) impFolderRemove(button.dataset.folder);
+  });
+  const deep = $("#impdeep");
+  deep.checked = impDeep();
+  deep.addEventListener("change", () => {
+    localStorage.setItem("impdeep", deep.checked ? "1" : "0");
+    impScan();
+  });
+  $("#impnew").addEventListener("change", (ev) => {
+    if (ev.target.classList.contains("imppick")) impPicked();
+  });
+}
+
+async function boot() {
+  /* Off the laptop, read the stored snapshot -- or, with none yet, stop at the
+     first-run screen. See SNAPSHOT above. */
+  if (SNAPSHOT && !(await snapshotBoot())) return;
+  [STATS, DIVES] = await Promise.all([
+    fetch("/api/stats").then(r => r.json()),
+    fetch("/api/dives").then(r => r.json()),
+  ]);
+  tiles(); loopTiles(); yearChart();
+
+  EDITABLE = await (await fetch("/api/editable")).json();
+
+  wireRegisters();
+  wireImport();
+  wireMedia();
+  wireViews();
+
+  $("#bulkfield").innerHTML = BULK_FIELDS
+    .filter(f => specFor(f))
+    .map(f => `<option value="${f}">${BULK_LABELS[f] || f.replace(/_id$/, "").replace("_", " ")}</option>`)
+    .join("");
+  $("#lognew").addEventListener("click", openNewDive);
+  $("#nd_save").addEventListener("click", saveNewDive);
+  $("#nd_cancel").addEventListener("click", () => { $("#newdive").hidden = true; });
+  $("#bulkaction").addEventListener("change", bulkModeChanged);
+  $("#bulkfield").addEventListener("change", bulkFieldChanged);
+  $("#bulkkind").addEventListener("change", bulkKindChanged);
+  $("#bulkapply").addEventListener("click", bulkApply);
+  $("#bulkclear").addEventListener("click", () => { PICKED.clear(); draw(); });
+  $("#selall").addEventListener("click", e => {
+    e.stopPropagation();
+    if (e.target.checked) VIEW.forEach(d => PICKED.add(d.id));
+    else VIEW.forEach(d => PICKED.delete(d.id));
+    draw();
+  });
+  await bulkModeChanged();
+  $("#editnotes").addEventListener("click", () => editNotes("notes"));
+  $("#editissues").addEventListener("click", () => editNotes("issues"));
+  $("#applykit").addEventListener("click", async () => {
+    const setId = $("#kitset").value;
+    if (!setId) { showError("no kit sets yet — save one from a dive first"); return; }
+    try {
+      const r = await post("/api/edit/kit/apply",
+        { dive_id: DETAIL.id, set_id: Number(setId) });
+      await reloadDive();
+      showError(`${r.items} items applied`);
+    } catch (e) { showError(e.message); }
+  });
+  $("#delkit").addEventListener("click", async () => {
+    const select = $("#kitset");
+    const setId = select.value;
+    if (!setId) { showError("no kit set selected"); return; }
+    const name = select.options[select.selectedIndex].text;
+    /* Worth spelling out, because "delete" next to a list of kit reads as if
+       it might take the kit with it. It does not: a set is only a named
+       combination, and the items stay in the register and on every dive they
+       were carried on. */
+    if (!confirm(`Delete the kit set ${name}?\n\n`
+        + `The items in it are not deleted \u2014 they stay in your kit and on `
+        + `every dive they were carried on. Only the set itself goes.`)) return;
+    try {
+      await post("/api/edit/kit/delete", { set_id: Number(setId) });
+      delete ENTITY_CACHE.kit_set;
+      await loadKitSets();
+      await loadKit();               /* the "sets" column has changed */
+      showError(`deleted "${name}"`);
+    } catch (e) { showError(e.message); }
+  });
+
+  $("#savekit").addEventListener("click", async () => {
+    const name = (prompt("Name this kit set") || "").trim();
+    if (!name) return;
+    try {
+      const r = await post("/api/edit/kit/save", { dive_id: DETAIL.id, name });
+      delete ENTITY_CACHE.kit_set;
+      await loadKitSets();
+      showError(`saved "${r.name}" with ${r.items} items`);
+    } catch (e) { showError(e.message); }
+  });
+  await loadKitSets();
+  $("#hidedive").addEventListener("click", toggleHide);
+  $("#unmergedive").addEventListener("click", unmergeDive);
+
+  const dims = await (await fetch("/api/dimensions")).json();
+  $("#dims").innerHTML = dims.map(d =>
+    `<button data-d="${d}">${LABELS[d] || d}</button>`).join("");
+  $("#dims").querySelectorAll("button").forEach(b =>
+    b.addEventListener("click", () => loadExplore(b.dataset.d)));
+  $("#clearsel").addEventListener("click", clearSelection);
+  await loadExplore(EXPLORE.dim);
+
+  const countries = [...new Set(DIVES.map(d => d.country).filter(Boolean))].sort();
+  $("#country").innerHTML += countries.map(c => `<option>${c}</option>`).join("");
+  $("#year").innerHTML += Object.keys(STATS.by_year).map(y => `<option>${y}</option>`).join("");
+
+  $("#q").addEventListener("input", e => { state.q = e.target.value; apply(); });
+  $("#country").addEventListener("change", e => { state.country = e.target.value; apply(); });
+  $("#year").addEventListener("change", e => { state.year = e.target.value; apply(); });
+  $("#deco").addEventListener("click", e => { state.deco = !state.deco; e.target.classList.toggle("on", state.deco); apply(); });
+  $("#trimix").addEventListener("click", e => { state.trimix = !state.trimix; e.target.classList.toggle("on", state.trimix); apply(); });
+  document.querySelectorAll("th[data-k]").forEach(th => th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    sortDir = (k === sortKey) ? -sortDir : 1; sortKey = k; apply();
+  }));
+  $("#theme").addEventListener("click", () => {
+    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+    const cur = document.documentElement.getAttribute("data-theme") || (dark ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
+  });
+
+  $("#foot").textContent =
+    `${STATS.samples.toLocaleString()} telemetry samples from ${STATS.dives} dives. `
+    + `${STATS.offsets_unknown} dives have no known UTC offset. `
+    + `A logbook, not a planning tool — nothing here substitutes for your training, `
+    + `agency standards, planning software or dive computer.`;
+
+  apply();
+
+  /* Rotating a phone changes the column width by a factor of two, and every
+     chart's label size is computed from it. Re-render what is on screen rather
+     than leave a portrait chart stretched across a landscape one. Debounced,
+     because a desktop drag fires this continuously. */
+  let resizing = null, wasWide = innerWidth;
+  addEventListener("resize", () => {
+    clearTimeout(resizing);
+    resizing = setTimeout(() => {
+      if (Math.abs(innerWidth - wasWide) < 24) return;   /* a keyboard opening */
+      wasWide = innerWidth;
+      if (STATS) yearChart();
+      if (EXPLORE.rows.length) drawBreakdown();
+      if (SAC) renderSac();
+      if (DETAIL) profileChart(DETAIL);
+    }, 180);
+  });
+
+  /* The service worker is what makes "Add to Home Screen" give an app rather
+     than a bookmark that dies without a network. It needs a secure context,
+     which Tailscale's HTTPS provides and plain http://127.0.0.1 also counts as,
+     so this runs in both places -- and the worker is written network-first for
+     the page and the API precisely so that running on the Mac cannot hand the
+     page a stale write token. See static/sw.js. The phone's static copy has
+     no token to go stale and registers its own, cache-first worker instead
+     (snapshotBoot, static/sw-phone.js). */
+  if ("serviceWorker" in navigator && !SNAPSHOT) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      /* Not a failure worth a message: without it the page simply needs the
+         Mac to be reachable, which is the normal case anyway. */
+    });
+  }
+}
+boot();
+</script>
+</body>
+</html>
