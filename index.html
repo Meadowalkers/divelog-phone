@@ -273,6 +273,19 @@ input[type=date][required]:invalid:not(:focus)::-webkit-datetime-edit { opacity:
 #kitretire label { font-size: 13px; color: var(--ink-muted); align-self: center; }
 .ticked { text-align: center; }
 .ticked input { margin: 0; }
+/* Marine life: the register's long names wrap, and the tick list on a dive. */
+#liferows td.fold { white-space: normal; }
+#liferows td.lname { min-width: 11em; }
+button.link { border: 0; background: none; padding: 0 4px; color: var(--accent-text);
+              text-decoration: underline; font-variant-numeric: tabular-nums; }
+.chip .why { cursor: text; }
+.lifelist { max-height: 300px; overflow-y: auto; margin-top: 6px; padding: 4px 8px;
+            border: 1px solid var(--rule); border-radius: 8px; background: var(--surface);
+            display: grid; gap: 0 18px; grid-template-columns: repeat(auto-fill, minmax(15em, 1fr)); }
+.lifelist label { display: flex; gap: 7px; align-items: baseline; padding: 2px 0; font-size: 13px;
+                  cursor: pointer; }
+.lifelist label.on { font-weight: 600; }
+.lifelist input { margin: 0; min-height: 0; padding: 0; }
 /* photographs. A contact sheet in the Media view, a strip everywhere else.
    The thumbnails are the small JPEGs the server made; the full-size original
    is one tap away and is never what fills a grid. */
@@ -404,7 +417,7 @@ svg { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
           padding-left: max(14px, env(safe-area-inset-left));
           padding-right: max(14px, env(safe-area-inset-right));
           padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
-  /* Five tabs will not sit on one line on an iPad in portrait. */
+  /* The tabs will not sit on one line on an iPad in portrait. */
   .views { flex-wrap: wrap; }
   .views button { padding: 11px 14px; min-height: 44px; }
   /* Apple's Human Interface Guidelines put the minimum tap target at 44pt.
@@ -441,6 +454,8 @@ svg { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
   #kitrows td.kname { min-width: 0; }
   #kithead th, #kitrows > tr > td { padding-left: 5px; padding-right: 5px; }
   #kitrows button { padding: 6px 8px; font-size: 13px; }
+  #liferows td { white-space: normal; }
+  #liferows td.lname { min-width: 0; overflow-wrap: anywhere; }
   .siteform th { width: 8em; }
   .tiles { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
   .tile .n { font-size: 21px; }
@@ -483,6 +498,7 @@ svg { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
     <button data-show="kit">Kit</button>
     <button data-show="people">People</button>
     <button data-show="sites">Sites</button>
+    <button data-show="marine">Marine life</button>
     <button data-show="sac">Gas use</button>
     <button data-show="import">Import</button>
     <button data-show="history">History</button>
@@ -576,6 +592,7 @@ svg { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
         <option value="equipment">Kit</option>
         <option value="dive_type">Dive type</option>
         <option value="organisation">Operator</option>
+        <option value="marine_species">Marine life</option>
       </select>
       <select id="bulktarget" hidden></select>
       <select id="bulkrole" hidden></select>
@@ -713,6 +730,39 @@ svg { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
         every dive there. Merging folds a duplicate into the site you keep and
         moves its dives across; hiding takes an undived site off the pickers.
         Neither deletes anything, and both can be undone.</p>
+    </div>
+  </section>
+
+  <section data-view="marine">
+    <h2>Marine life</h2>
+    <div class="card">
+      <p class="hidden-note" id="lifemissing" hidden></p>
+      <div id="lifebody">
+      <div class="filters">
+        <button data-life="shown" class="on">Shown</button>
+        <button data-life="hidden">Hidden</button>
+        <button data-life="all">All</button>
+        <input type="search" id="lifeq" placeholder="Search animals…">
+        <select id="lifecat" aria-label="category"></select>
+        <span class="count" id="lifecount"></span>
+      </div>
+      <div class="err" id="lifeerr"></div>
+      <!-- Filled by the script, and only where a write could succeed. -->
+      <div id="lifeadd"></div>
+      <div class="tablewrap scroll">
+        <table>
+          <thead><tr>
+            <th>Animal</th><th class="c3">Category</th><th class="c2">Scientific name</th>
+            <th class="num">Dives</th><th class="c2">First seen</th>
+            <th class="c3">Last seen</th><th></th>
+          </tr></thead>
+          <tbody id="liferows"></tbody>
+        </table>
+      </div>
+      <p class="sub">Press a dive count to list those dives. Hiding an animal takes
+        it off the tick list on a dive; it stays on every dive it was seen on, and
+        can be restored. Nothing here is ever deleted.</p>
+      </div>
     </div>
   </section>
 
@@ -1867,12 +1917,14 @@ async function renderLinks() {
       linkGroup("People", "person", d.people || [], EDITABLE.person_roles)
     + linkGroup("Dive type", "dive_type", d.dive_types || [], null)
     + linkGroup("Kit", "equipment", d.equipment || [], null)
+    + `<div id="dlife" style="margin-top:12px"></div>`
     + linkGroup("Operator", "organisation", d.organisations || [], EDITABLE.organisation_roles)
     + gasSection(d)
     + (extras.length ? `<div style="margin-top:12px"><span style="font-size:11px;
         text-transform:uppercase;letter-spacing:.07em;color:var(--ink-faint)">Recorded
         extras</span><div class="chips">${extras.map(e =>
         `<span class="chip">${esc(e)}</span>`).join("")}</div></div>` : "");
+  renderDiveLife();
 
   for (const select of $("#dchips").querySelectorAll("select[data-add-for]")) {
     const kind = select.dataset.addFor;
@@ -2173,6 +2225,8 @@ async function loadKitSets() {
     : `<option value="">no kit sets yet</option>`;
 }
 
+const HISTORY_WORDS = { marine_species: "marine life" };
+
 async function loadHistory() {
   const rows = await (await fetch("/api/history")).json();
   /* Render everything the server sends. It was showing half of it: the server
@@ -2182,8 +2236,9 @@ async function loadHistory() {
      implying it is the whole record. */
   $("#history").innerHTML = rows.length
     ? rows.map(r => `<div>${r.at.slice(0, 16).replace("T", " ")} ·
-        <b>${r.action}</b> ${r.entity}${r.entity_id ? " " + r.entity_id : ""}
-        ${r.field ? "· " + r.field : ""}
+        <b>${r.action}</b> ${HISTORY_WORDS[r.entity] || r.entity}${
+          r.name ? ` ${esc(r.name)} (#${r.entity_id})` : r.entity_id ? " " + r.entity_id : ""}
+        ${r.field ? "· " + (HISTORY_WORDS[r.field] || r.field) : ""}
         ${r.old_value != null ? `· from ${esc(String(r.old_value).slice(0, 40))}` : ""}
         ${r.new_value != null ? `· to ${esc(String(r.new_value).slice(0, 40))}` : ""}
         ${r.note ? `· ${esc(r.note)}` : ""}</div>`).join("")
@@ -2199,7 +2254,7 @@ const LABELS = {
   equipment: "Equipment", dive_type: "Dive type", operator: "Operator",
   buddy: "Buddy", divemaster: "Divemaster", site: "Site", country: "Country",
   trip: "Trip", vessel: "Boat", computer: "Computer",
-  supply_mode: "Supply mode", suit: "Suit",
+  supply_mode: "Supply mode", suit: "Suit", marine_life: "Marine life",
 };
 const EXPLORE = { dim: "operator", rows: [] };
 const CHART_ROWS = 18;   /* the rest stay in the table below, not squeezed in */
@@ -2276,14 +2331,14 @@ function drawBreakdown() {
     tr.addEventListener("click", () => selectValue(tr.dataset.v)));
 }
 
-async function selectValue(value) {
+async function selectValue(value, dim = EXPLORE.dim) {
   const ids = await (await fetch(
-    `/api/dimension/${EXPLORE.dim}/dives?value=${encodeURIComponent(value)}`)).json();
+    `/api/dimension/${dim}/dives?value=${encodeURIComponent(value)}`)).json();
   state.ids = new Set(ids);
   const button = $("#clearsel");
   button.hidden = false;
   button.classList.add("on");
-  button.textContent = `${LABELS[EXPLORE.dim]}: ${value}  ✕`;
+  button.textContent = `${LABELS[dim]}: ${value}  ✕`;
   apply();
   $("#rows").closest("section").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -2611,8 +2666,10 @@ const REGISTERS = {
                err: "#peopleerr" },
   /* A site's write reaches beyond its register -- see siteWritten(). */
   site:      { load: () => loadSites(), written: () => siteWritten(), err: "#siteserr" },
+  marine_species: { load: () => loadLife(), written: () => registerWritten("marine_species"),
+                    err: "#lifeerr" },
 };
-/* After a write to a kit item or a person. The dive page's picker caches its
+/* After a write to a kit item, a person or an animal. The dive page's picker caches its
    list, the open dive's chips carry the name, and a breakdown row asks for its
    dives by it -- a renamed item's old row would click through to none. Only
    the open dive's links are redrawn: notes half written on it stay put. */
@@ -2651,6 +2708,20 @@ function ecell(entity, id, field, value, placeholder = "—", label = null, cls 
 
 /* What a reference field in a register picks from. */
 const REGISTER_REFS = { country_id: "country" };
+/* A field that is free text but is picked from what is already in use, with a
+   way to type one that is not: typing them all is how "Fish" and "fish" become
+   two categories. Keyed by entity and field. */
+const REGISTER_PICKS = { "marine_species.category": () => lifeCategories() };
+
+/* Runs when ＋ New… is picked in such a list; leaves the list on `before` if
+   nothing was typed. A name already there, whatever its capitals, is that one. */
+function pickNew(select, what, known, before) {
+  const typed = (prompt(`Name of the new ${what}`) || "").trim();
+  const same = known.find(v => v.toLowerCase() === typed.toLowerCase());
+  if (typed && !same)
+    select.innerHTML += `<option value="${esc(typed)}">${esc(typed)}</option>`;
+  select.value = same || typed || before;
+}
 
 async function ecellEdit(td) {
   if (!WRITABLE || td.dataset.editing) return;
@@ -2661,7 +2732,9 @@ async function ecellEdit(td) {
   /* A field with a fixed vocabulary, or one that points at another record,
      is picked rather than typed: a typed "Wreck" is not the "wreck" a filter
      looks for, and nobody knows a country's id. */
+  const picks = REGISTER_PICKS[`${entity}.${field}`];
   const choices = spec.choices ? JSON.parse(spec.choices)
+    : picks ? picks().map(v => [v, v])
     : REGISTER_REFS[field] ? (await entityList(REGISTER_REFS[field]))
                                .map(r => [String(r.id), r.name])
     : null;
@@ -2671,7 +2744,7 @@ async function ecellEdit(td) {
     input.innerHTML = `<option value="">—</option>` + choices.map(c => {
       const [v, label] = Array.isArray(c) ? c : [String(c), String(c).replace(/_/g, " ")];
       return `<option value="${esc(v)}">${esc(label)}</option>`;
-    }).join("");
+    }).join("") + (picks ? `<option value="__new__">＋ New…</option>` : "");
   } else if (field === "notes") {
     input = document.createElement("textarea");
   } else {
@@ -2691,7 +2764,7 @@ async function ecellEdit(td) {
   const finish = async (commit) => {
     if (done) return;
     done = true;
-    const typed = input.value.trim();
+    const typed = input.value === "__new__" ? start : input.value.trim();
     /* A date half typed reads back as empty, and must not clear the date. */
     if (commit && input.validity && input.validity.badInput) {
       listError(entity, "That date is incomplete — nothing was changed.");
@@ -2712,8 +2785,17 @@ async function ecellEdit(td) {
     } catch (e) { listError(entity, e.message); await refreshList(entity); return; }
     await (REGISTERS[entity].written || REGISTERS[entity].load)();
   };
-  if (choices) input.addEventListener("change", () => input.blur());
-  input.addEventListener("blur", () => finish(true));
+  /* Asking for a new name may take the focus off the list, which is not
+     leaving it. */
+  let asking = false;
+  if (choices) input.addEventListener("change", () => {
+    if (!picks || input.value !== "__new__") { input.blur(); return; }
+    asking = true;
+    pickNew(input, field, picks(), before);
+    asking = false;
+    return finish(true);
+  });
+  input.addEventListener("blur", () => { if (!asking) return finish(true); });
   input.addEventListener("keydown", (e) => {
     /* In a notes box Enter is a new line; with ⌘ or Ctrl it saves. */
     if (e.key === "Enter" && (field !== "notes" || choices || e.metaKey || e.ctrlKey)) {
@@ -3149,10 +3231,376 @@ function wireSites() {
   });
 }
 
+/* ------------------------------------------------------- marine life
+
+   The fourth register, and the block on a dive that fills it. The names are
+   the Owner's own ("Eel - Unidentified"); how often, first and last are worked
+   out from the dives. LIFE is null until it has been read, and stays null on
+   a phone whose snapshot was made before any of this existed. */
+let LIFE = null, lifeTab = "shown", LIFE_OPEN = null;
+const NO_CATEGORY = "__none__";
+
+async function loadLife() {
+  const response = await fetch("/api/marine");
+  LIFE = response.ok ? await response.json() : null;
+  renderLife();
+  fillLifeNewCategory();
+}
+
+function lifeCategories() {
+  return [...new Set((LIFE || []).map(m => m.category).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+const inLifeTab = m => lifeTab === "all" || (lifeTab === "hidden" ? m.hidden_at : !m.hidden_at);
+
+/* The filter lists what is on this tab, with how many; the one picked is kept
+   through every redraw for as long as it exists. */
+function renderLifeCategories() {
+  const select = $("#lifecat"), was = select.value || "";
+  const here = LIFE.filter(inLifeTab);
+  const count = c => here.filter(m => (m.category || NO_CATEGORY) === c).length;
+  const options = [...lifeCategories(), NO_CATEGORY].filter(c => count(c) || c === was);
+  select.innerHTML = `<option value="">All categories</option>` + options.map(c =>
+    `<option value="${esc(c)}">${c === NO_CATEGORY ? "No category" : esc(c)} (${count(c)})</option>`
+  ).join("");
+  select.value = options.includes(was) ? was : "";
+}
+
+function renderLife() {
+  $("#lifemissing").hidden = LIFE !== null;
+  $("#lifebody").hidden = LIFE === null;
+  if (LIFE === null) {
+    $("#liferows").innerHTML = "";
+    $("#lifemissing").textContent = SNAPSHOT
+      ? "This snapshot was made before marine life was added to the log. Back up on the "
+        + "laptop, then use Load newer above."
+      : "Marine life could not be read.";
+    return;
+  }
+  renderLifeCategories();
+  const q = ($("#lifeq").value || "").trim().toLowerCase();
+  const category = $("#lifecat").value || "";
+  const shown = LIFE.filter(m => !m.hidden_at).length;
+  const rows = LIFE.filter(m => inLifeTab(m)
+    && (!category || (m.category || NO_CATEGORY) === category)
+    && (!q || `${m.common_name} ${m.category || ""} ${m.scientific_name || ""} ${
+                m.family || ""} ${m.genus || ""} ${m.notes || ""}`.toLowerCase().includes(q)));
+  $("#lifecount").textContent =
+    `${rows.length} listed — ${shown} shown, ${LIFE.length - shown} hidden`;
+  const cell = (m, field, cls) =>
+    ecell("marine_species", m.id, field, m[field] || null, "—", null, cls);
+  $("#liferows").innerHTML = rows.length ? rows.map(m => `<tr${
+      m.hidden_at ? ` class="hiddensite"` : ""}>
+      ${cell(m, "common_name", "fold lname")}
+      ${cell(m, "category", "fold c3")}
+      ${cell(m, "scientific_name", "fold c2")}
+      <td class="num">${m.dives
+        ? `<button class="link" data-lifedives="${m.id}" title="list these dives">${m.dives}</button>`
+        : "0"}</td>
+      <td class="c2">${fmtDay(m.first_seen)}</td>
+      <td class="c3">${fmtDay(m.last_seen)}</td>
+      <td><button data-lifeopen="${m.id}">${LIFE_OPEN === m.id ? "Close" : "Details"}</button></td>
+    </tr>`
+    + (LIFE_OPEN === m.id ? `<tr class="photorow"><td colspan="7" id="lifeopen"></td></tr>`
+                          : "")).join("")
+    : `<tr><td colspan="7" class="empty">nothing matches</td></tr>`;
+  if (LIFE_OPEN !== null) renderLifeOpen();
+}
+
+const LIFE_FIELDS = [
+  ["Animal", "common_name"], ["Category", "category"],
+  ["Scientific name", "scientific_name"], ["Kingdom", "kingdom"],
+  ["Phylum", "phylum"], ["Class", "class_name"], ["Order", "order_name"],
+  ["Family", "family"], ["Genus", "genus"], ["Notes", "notes"],
+];
+
+function renderLifeOpen() {
+  const host = $("#lifeopen");
+  const m = LIFE.find(x => x.id === LIFE_OPEN);
+  if (!host || !m) return;
+  const fixed = (label, value) => `<tr><th>${label}</th><td>${esc(value ?? "—")}</td></tr>`;
+  const status = !m.hidden_at ? "" : `<p class="hidden-note">Hidden on ${fmtDay(m.hidden_at)}${
+    m.hidden_reason ? ` — ${esc(m.hidden_reason)}` : ""}.</p>`;
+  const action = !WRITABLE ? "" : `<div class="addrow">${m.hidden_at
+    ? `<button data-liferestore="${m.id}">Restore</button>`
+    : `<button class="danger" data-lifehide="${m.id}">Hide</button>`}</div>`;
+  host.innerHTML = status + `<table class="siteform"><tbody>
+      ${LIFE_FIELDS.map(([label, field]) => `<tr><th>${label}</th>${
+        ecell("marine_species", m.id, field, m[field] || null, "—", null,
+              field === "notes" ? "pre" : "")}</tr>`).join("")}
+      ${fixed("Dives", m.dives)}
+      ${fixed("First / last seen", `${fmtDay(m.first_seen)} / ${fmtDay(m.last_seen)}`)}
+      ${fixed("Animal number", `#${m.id}`)}
+    </tbody></table><div id="lifephotos"></div>` + action;
+  const strip = $("#lifephotos");
+  const items = (MEDIA || []).filter(p => (p.animals || []).some(x => x.id === m.id));
+  strip.innerHTML = photoStrip("marine_species", m.id, items);
+  wirePhotoStrip(strip, "marine_species", m.id, items,
+                 async () => { await mediaLibrary(); await loadLife(); });
+}
+
+async function lifeOpen(id) {
+  LIFE_OPEN = LIFE_OPEN === id ? null : id;
+  if (LIFE_OPEN !== null) {
+    try { await mediaLibrary(); } catch (e) { listError("marine_species", e.message); }
+  }
+  renderLife();
+}
+
+/* To the dive list, filtered to this animal's dives -- the same way through as
+   a row of the breakdown. */
+async function lifeDives(id) {
+  const m = LIFE.find(x => x.id === id);
+  if (!m) return;
+  showView("log");
+  await selectValue(m.label, "marine_life");
+}
+
+async function lifeAction(path, body) {
+  try { await post(path, body); }
+  catch (e) { listError("marine_species", e.message); return; }
+  await registerWritten("marine_species");
+}
+
+const LIFE_NEW = [["common_name", "new animal"], ["category", "category"],
+                  ["scientific_name", "scientific name"], ["notes", "notes"]];
+
+function renderLifeAdd() {
+  $("#lifeadd").innerHTML = !WRITABLE ? "" : `<div class="addrow">${
+    LIFE_NEW.map(([field, hint]) => field === "category"
+      ? `<select data-lifenew="category" aria-label="category"></select>`
+      : `<input data-lifenew="${field}" placeholder="${hint}" aria-label="${hint}">`).join("")
+    }<button data-lifeadd="1">Add animal</button></div>`;
+  fillLifeNewCategory();
+}
+
+function fillLifeNewCategory() {
+  const select = $('select[data-lifenew="category"]');
+  if (!WRITABLE || !select) return;
+  /* One just typed is not on any animal yet, and stays picked. */
+  const was = select.value === "__new__" ? "" : select.value || "";
+  const known = lifeCategories();
+  select.innerHTML = `<option value="">— category —</option>`
+    + (was && !known.includes(was) ? [...known, was] : known).map(c =>
+        `<option value="${esc(c)}">${esc(c)}</option>`).join("")
+    + `<option value="__new__">＋ New…</option>`;
+  select.value = was;
+}
+
+async function lifeAdd() {
+  const inputs = LIFE_NEW.map(([field]) => [field, $(`[data-lifenew="${field}"]`)]);
+  const fields = {};
+  for (const [field, input] of inputs)
+    fields[field] = input.value === "__new__" ? "" : (input.value || "").trim();
+  if (!fields.common_name) { listError("marine_species", "Give the new animal a name."); return; }
+  let made;
+  try {
+    made = await post("/api/edit/entity", { kind: "marine_species", fields });
+  } catch (e) { listError("marine_species", e.message); return; }
+  if (made.created) for (const [, input] of inputs) input.value = "";
+  else listError("marine_species", `"${made.name}" is already on the list — nothing was added.`);
+  /* Show it, new or not: past the filters, open. */
+  $("#lifeq").value = ""; $("#lifecat").value = "";
+  LIFE_OPEN = made.id;
+  lifeShow("shown");
+  await registerWritten("marine_species");
+}
+
+function lifeShow(tab) {
+  lifeTab = tab;
+  document.querySelectorAll("button[data-life]")
+    .forEach(b => b.classList.toggle("on", b.dataset.life === tab));
+  renderLife();
+}
+
+/* ---- on a dive ---------------------------------------------------------
+
+   Chips for what was seen, and a tick list that saves as it is ticked. The
+   block is drawn in three pieces -- chips, search, list -- so that a tick can
+   redraw what it changed without taking the search box out from under the
+   cursor or scrolling the list back to the top. */
+const LIFE_PICK = { open: false, q: "", first: new Set(), dive: null };
+let LIFE_QUEUE = Promise.resolve();
+
+const seen = () => DETAIL.marine_life || [];
+
+function renderDiveLife() {
+  const host = $("#dlife");
+  /* Absent, not empty, on a snapshot older than marine life: say nothing
+     rather than "none". */
+  if (!host || !DETAIL || !DETAIL.marine_life) { if (host) host.innerHTML = ""; return; }
+  host.innerHTML = `<span style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+      color:var(--ink-faint)">Marine life</span>
+    <div class="chips" id="dlifechips"></div>
+    ${!WRITABLE ? "" : `<div class="addrow">
+      <button id="dlifetoggle" data-lifetoggle="1"></button></div>
+      <div class="err" id="dlifeerr"></div><div id="dlifepick"></div>`}`;
+  if (LIFE_PICK.dive !== DETAIL.id) LIFE_PICK.open = false;   /* another dive */
+  renderDiveLifeChips();
+  if (WRITABLE) renderDiveLifePick();
+}
+
+function renderDiveLifeChips() {
+  $("#dlifechips").innerHTML = seen().map(m => `<span class="chip${WRITABLE ? " del" : ""}">${
+      WRITABLE ? `<span class="why" data-lifenote="${m.id}" title="${m.note
+        ? "change the note" : "add a note"}">` : ""}${esc(m.name)}${
+      m.note ? ` · ${esc(m.note)}` : ""}${WRITABLE ? `</span><button data-lifeoff="${m.id}"
+        title="remove">✕</button>` : ""}</span>`).join("") || '<span class="chip">none</span>';
+}
+
+/* Ticked first, as they stood when the list was opened or searched: a row that
+   jumped to the top as it was ticked would put another under the finger. */
+function openDiveLife() {
+  LIFE_PICK.open = !LIFE_PICK.open;
+  LIFE_PICK.q = "";
+  LIFE_PICK.dive = DETAIL.id;
+  delete ENTITY_CACHE.marine_species;
+  return renderDiveLifePick();
+}
+
+async function renderDiveLifePick() {
+  $("#dlifetoggle").textContent = LIFE_PICK.open ? "Close the list" : "Tick what you saw…";
+  const host = $("#dlifepick");
+  if (!LIFE_PICK.open) { host.innerHTML = ""; return; }
+  await entityList("marine_species");
+  host.innerHTML = `<div class="addrow">
+      <input type="search" id="dlifeq" placeholder="Search animals…" value="${esc(LIFE_PICK.q)}">
+      <button data-lifecreate="1" id="dlifenew" hidden></button></div>
+    <div class="lifelist" id="dlifelist"></div>`;
+  LIFE_PICK.first = new Set(seen().map(m => m.id));
+  renderDiveLifeList();
+}
+
+function renderDiveLifeList() {
+  const all = ENTITY_CACHE.marine_species || [];
+  const q = LIFE_PICK.q.trim().toLowerCase();
+  const on = new Set(seen().map(m => m.id));
+  const rows = all.filter(m => !q || `${m.name} ${m.category || ""}`.toLowerCase().includes(q));
+  const order = [...rows.filter(m => LIFE_PICK.first.has(m.id)),
+                 ...rows.filter(m => !LIFE_PICK.first.has(m.id))];
+  $("#dlifelist").innerHTML = order.map(m => `<label class="${on.has(m.id) ? "on" : ""}"
+    ><input type="checkbox" data-lifetick="${m.id}"${on.has(m.id) ? " checked" : ""}
+    ><span>${esc(m.name)}</span></label>`).join("") || `<p class="empty">nothing matches</p>`;
+  const fresh = $("#dlifenew");
+  fresh.hidden = !q || all.some(m => m.name.toLowerCase() === q);
+  fresh.textContent = `＋ Add “${LIFE_PICK.q.trim()}” as a new animal`;
+}
+
+/* One write at a time, in the order they were ticked: two answers crossing
+   would leave the boxes showing the older one. The dive is the one it was
+   ticked on, even if another has been opened since. */
+function lifeWrite(work) {
+  const dive = DETAIL.id;
+  return LIFE_QUEUE = LIFE_QUEUE.then(async () => {
+    let said = "";
+    try { await work(dive); } catch (e) { said = e.message; }
+    try {
+      const now = await (await fetch("/api/dive/" + dive)).json();
+      if (EXPLORE.dim === "marine_life") await loadExplore(EXPLORE.dim);
+      if (DETAIL && DETAIL.id === dive) DETAIL.marine_life = now.marine_life;
+    } catch (e) { said = said || e.message; }
+    if (!DETAIL || DETAIL.id !== dive) return;
+    $("#dlifeerr").textContent = said;
+    renderDiveLifeChips();
+    if (LIFE_PICK.open) renderDiveLifeList();
+  });
+}
+
+const lifeTick = (id, on) => lifeWrite(dive => post(
+  on ? "/api/edit/link" : "/api/edit/unlink",
+  { dive_id: dive, kind: "marine_species", target_id: id, role: null }));
+
+function lifeCreate() {
+  const name = LIFE_PICK.q.trim();
+  if (!name) return;
+  return lifeWrite(async dive => {
+    const made = await post("/api/edit/entity", { kind: "marine_species", name });
+    delete ENTITY_CACHE.marine_species;
+    await entityList("marine_species");
+    await post("/api/edit/link",
+      { dive_id: dive, kind: "marine_species", target_id: made.id, role: null });
+    LIFE_PICK.q = ""; $("#dlifeq").value = "";
+    LIFE_PICK.first.add(made.id);
+  });
+}
+
+function lifeNote(id) {
+  const now = seen().find(m => m.id === id);
+  if (!now) return;
+  const note = prompt(`A short note on the ${now.name} (blank for none)`, now.note || "");
+  if (note === null || unchangedEdit(now.note, note.trim())) return;
+  return lifeWrite(dive => post("/api/edit/marine/note", { dive_id: dive, id, note }));
+}
+
+function wireLife() {
+  $("#lifeq").addEventListener("input", renderLife);
+  $("#lifecat").addEventListener("change", renderLife);
+  renderLifeAdd();
+  $("#lifeq").closest(".filters").addEventListener("click", (ev) => {
+    const tab = ev.target.closest("button[data-life]");
+    if (tab) lifeShow(tab.dataset.life);
+  });
+  $("#lifeadd").addEventListener("click", (ev) => {
+    if (ev.target.closest("button[data-lifeadd]")) return lifeAdd();
+  });
+  $("#lifeadd").addEventListener("change", (ev) => {
+    const select = ev.target.closest('select[data-lifenew="category"]');
+    if (select && select.value === "__new__")
+      pickNew(select, "category", lifeCategories(), "");
+  });
+  $("#lifeadd").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && ev.target.closest("input[data-lifenew]")) return lifeAdd();
+  });
+  $("#liferows").addEventListener("click", async (ev) => {
+    const open = ev.target.closest("button[data-lifeopen]");
+    if (open) { await lifeOpen(Number(open.dataset.lifeopen)); return; }
+    const dives = ev.target.closest("button[data-lifedives]");
+    if (dives) { await lifeDives(Number(dives.dataset.lifedives)); return; }
+    const hide = ev.target.closest("button[data-lifehide]");
+    if (hide) {
+      const reason = prompt("Why is this animal coming off the list?\n\n"
+        + "It is hidden, not deleted, stays on its dives, and can be restored.", "");
+      if (reason === null) return;
+      await lifeAction("/api/edit/marine/hide",
+        { id: Number(hide.dataset.lifehide), reason: reason || null });
+      return;
+    }
+    const restore = ev.target.closest("button[data-liferestore]");
+    if (restore) {
+      await lifeAction("/api/edit/marine/restore", { id: Number(restore.dataset.liferestore) });
+      return;
+    }
+    const td = ev.target.closest("td.ecell");
+    if (td) ecellEdit(td);
+  });
+
+  /* On the dive page. Wired once, on what the block is drawn inside. */
+  $("#dchips").addEventListener("click", (ev) => {
+    if (ev.target.closest("button[data-lifetoggle]")) return openDiveLife();
+    if (ev.target.closest("button[data-lifecreate]")) return lifeCreate();
+    const off = ev.target.closest("button[data-lifeoff]");
+    if (off) return lifeTick(Number(off.dataset.lifeoff), false);
+    const note = ev.target.closest("[data-lifenote]");
+    if (note) return lifeNote(Number(note.dataset.lifenote));
+  });
+  $("#dchips").addEventListener("change", (ev) => {
+    const tick = ev.target.closest("input[data-lifetick]");
+    if (tick) return lifeTick(Number(tick.dataset.lifetick), tick.checked);
+  });
+  $("#dchips").addEventListener("input", (ev) => {
+    if (!ev.target.closest("#dlifeq")) return;
+    LIFE_PICK.q = ev.target.value;
+    LIFE_PICK.first = new Set(seen().map(m => m.id));
+    renderDiveLifeList();
+  });
+}
+
 function wireRegisters() {
   $("#kitq").addEventListener("input", renderKit);
   $("#peopleq").addEventListener("input", renderPeople);
   wireSites();
+  wireLife();
 
   renderKitAdd();
   $("#kitq").closest(".filters").addEventListener("click", (ev) => {
@@ -3659,12 +4107,14 @@ const MEDIA_TABS = {
   all: () => true,
   dive: p => p.dives.length > 0,
   kit: p => p.kit.length > 0,
-  loose: p => !p.dives.length && !p.kit.length && !(p.sites || []).length,
+  loose: p => !p.dives.length && !p.kit.length && !(p.sites || []).length
+              && !(p.animals || []).length,
 };
 
 function photoTile(p) {
   const places = p.dives.map(d => `dive ${d.dive_number ?? d.id}`)
-    .concat(p.kit.map(k => k.name), (p.sites || []).map(x => x.name));
+    .concat(p.kit.map(k => k.name), (p.sites || []).map(x => x.name),
+            (p.animals || []).map(x => x.name));
   return `<div class="photo">
     <a href="/media/${p.id}" target="_blank" rel="noopener">
       <img src="/thumb/${p.id}" loading="lazy" alt="${esc(photoLabel(p))}"></a>
@@ -3683,8 +4133,9 @@ function renderMedia() {
   const q = ($("#mediaq").value || "").trim().toLowerCase();
   const rows = (MEDIA || []).filter(MEDIA_TABS[mediaTab]).filter(p => !q
     || `${photoLabel(p)} ${p.dives.map(d => `${d.dive_number} ${d.site || ""}`).join(" ")} `
-       .concat(p.kit.map(k => k.name).join(" ")).toLowerCase().includes(q));
-  const filed = (MEDIA || []).filter(p => p.dives.length || p.kit.length).length;
+       .concat(p.kit.concat(p.animals || []).map(k => k.name).join(" "))
+       .toLowerCase().includes(q));
+  const filed = (MEDIA || []).filter(p => !MEDIA_TABS.loose(p)).length;
   $("#mediacount").textContent = MEDIA && MEDIA.length
     ? `${rows.length} shown — ${MEDIA.length} in the library, ${filed} filed`
     : "";
@@ -3843,6 +4294,7 @@ function showView(name) {
   if (name === "kit") loadKit();
   if (name === "people") loadPeople();
   if (name === "sites") loadSites();
+  if (name === "marine") loadLife();
   scrollTo({ top: 0, behavior: "smooth" });
 }
 

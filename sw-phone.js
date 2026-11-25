@@ -21,7 +21,7 @@
    dropped on activate. Paths are relative, so the shell works from a
    subfolder (GitHub Pages serves a project from /<repo>/). */
 
-const VERSION = "divelog-phone-03e41db294c0";
+const VERSION = "divelog-phone-b4a3bdc354ee";
 const SHELL = ["./", "index.html", "manifest.webmanifest",
                "icon-180.png", "icon-192.png", "icon-512.png"];
 
